@@ -72,6 +72,74 @@ def simulate_coastal(
 	return h
 
 
+def simulate_inland_filtered(
+	params: Tuple[float, float, float, float, float, float],
+	t: np.ndarray,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	h_up: np.ndarray,
+	h0: float,
+) -> np.ndarray:
+	# Inland ODE with low-pass filtered upstream driver (dt=1):
+	#   u[t+1] = (1 - lambda) * u[t] + lambda * h_up[t]
+	#   h[t+1] = h[t] + [-a*(h[t] - z) + b*R[t] - c*AMP[t] + k*(u[t] - h[t])]
+	#
+	# NOTE:
+	# - If using upstream lag tau, pass h_up already aligned to the
+	#   simulation window.
+	a, z, b, c, k_link, lam = params
+	n = len(t)
+	h = np.zeros(n, dtype=float)
+	h[0] = h0
+	u = float(h_up[0]) if len(h_up) > 0 else 0.0
+	for i in range(1, n):
+		h_prev = h[i - 1]
+		h[i] = h_prev + (
+			-a * (h_prev - z)
+			+ b * rainfall[i - 1]
+			- c * amp[i - 1]
+			+ k_link * (u - h_prev)
+		)
+		u = (1.0 - lam) * u + lam * h_up[i - 1]
+	return h
+
+
+def simulate_coastal_filtered(
+	params: Tuple[float, float, float, float, float, float, float, float, float],
+	t: np.ndarray,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	amt: np.ndarray,
+	h_up: np.ndarray,
+	h0: float,
+) -> np.ndarray:
+	# Coastal ODE with low-pass filtered upstream driver (dt=1):
+	#   u[t+1] = (1 - lambda) * u[t] + lambda * h_up[t]
+	#   h[t+1] = h[t] + [-a*(h[t] - z) + b*R[t] - c*AMP[t] + k*(u[t] - h[t])]
+	#            - k_sgd*(h[t] - h_sea) + gamma*AMT[t]
+	#
+	# NOTE:
+	# - If using upstream lag tau, pass h_up already aligned to the
+	#   simulation window.
+	a, z, b, c, k_link, k_sgd, gamma, h_sea, lam = params
+	n = len(t)
+	h = np.zeros(n, dtype=float)
+	h[0] = h0
+	u = float(h_up[0]) if len(h_up) > 0 else 0.0
+	for i in range(1, n):
+		h_prev = h[i - 1]
+		h[i] = h_prev + (
+			-a * (h_prev - z)
+			+ b * rainfall[i - 1]
+			- c * amp[i - 1]
+			+ k_link * (u - h_prev)
+			- k_sgd * (h_prev - h_sea)
+			+ gamma * amt[i - 1]
+		)
+		u = (1.0 - lam) * u + lam * h_up[i - 1]
+	return h
+
+
 ###############################################################################
 # Define a wrapper that curve_fit will call
 ###############################################################################
@@ -114,6 +182,54 @@ def gw_model_wrapper(
 		)
 	else:
 		return simulate_inland(
+			params=params,  # type: ignore[arg-type]
+			t=t,
+			rainfall=rainfall,
+			amp=amp,
+			h_up=h_up,
+			h0=h0,
+		)
+
+
+def gw_model_wrapper_filtered(
+	t: np.ndarray,
+	*params: float,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	amt: Optional[np.ndarray],
+	h_up: np.ndarray,
+	h0: float,
+	is_coastal: bool,
+) -> np.ndarray:
+	"""Wrapper for curve_fit for the filtered-upstream model.
+
+	Parameters
+	----------
+	t : np.ndarray
+		Time index (0..N-1).
+	*params : float
+		Model parameters. For inland: (a, z, b, c, k_link, lambda).
+		For coastal: (a, z, b, c, k_link, k_sgd, gamma, h_sea, lambda).
+	rainfall, amp, amt, h_up : np.ndarray
+		Input series used by the groundwater model. If using upstream lag tau,
+		pass a lagged/trimmed `h_up` aligned to the calibration window.
+	h0 : float
+		Initial groundwater level.
+	is_coastal : bool
+		If True, use the coastal model; otherwise inland.
+	"""
+	if is_coastal:
+		return simulate_coastal_filtered(
+			params=params,  # type: ignore[arg-type]
+			t=t,
+			rainfall=rainfall,
+			amp=amp,
+			amt=amt if amt is not None else np.zeros_like(t),
+			h_up=h_up,
+			h0=h0,
+		)
+	else:
+		return simulate_inland_filtered(
 			params=params,  # type: ignore[arg-type]
 			t=t,
 			rainfall=rainfall,

@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 from pathlib import Path
 from typing import List, Tuple, Optional
 import pandas as pd
@@ -461,12 +462,17 @@ def random_multi_start(
             print(f"Start {i+1}: guess={guess}, bounds=({lower_arr}, {upper_arr})")
 
         try:
+            y0 = model_func(xdata, *guess, **model_kwargs)
+            if not np.all(np.isfinite(y0)):
+                print(f"Start {i+1}: FAILED due to non-finite initial simulation")
+                continue
             popt_i, pcov_i = curve_fit(
                 f=lambda tt, *pp: model_func(tt, *pp, **model_kwargs),
                 xdata=xdata,
                 ydata=ydata,
                 p0=guess,
                 bounds=(lower_arr, upper_arr),
+                maxfev=10000,
             )
             # Evaluate the fit
             y_fit_i = model_func(xdata, *popt_i, **model_kwargs)
@@ -488,12 +494,13 @@ def random_multi_start(
 # Per-station calibration
 ###############################################################################
 
-def calibrate_station(
+def _fit_model(
     df_merge: pd.DataFrame,
     group_name: str,
-    lag_days: int = 0,
-    no_upstream: bool = False,
-    n_starts: int = 10,
+    lag_days: int,
+    no_upstream: bool,
+    n_starts: int,
+    model_name: str,
 ):
     t, rainfall, amp, amt, h_up, h_obs = fit_preprocess(df_merge, lag_days=lag_days)
     h0 = float(h_obs[0])
@@ -508,22 +515,46 @@ def calibrate_station(
         no_upstream=no_upstream,
     )
 
-    if is_coastal:
-        lower, upper = estimate_bounds_coastal(h_obs, rainfall, amp, amt, h_up, no_upstream=no_upstream)
-        param_names = ["a", "z", "b", "c", "k_link", "k_sgd", "gamma", "h_sea"]
-        # Extend inland guess with coastal-specific parameters
-        h_mean = float(np.mean(h_obs))
-        k_sgd0 = 0.1
-        gamma0 = 0.1
-        h_sea0 = h_mean
-        base_p0 = np.array([a0, z0, b0, c0, k0, k_sgd0, gamma0, h_sea0], dtype=float)
+    if model_name == "base":
+        model_func = sub.gw_model_wrapper
+        if is_coastal:
+            lower, upper = estimate_bounds_coastal(h_obs, rainfall, amp, amt, h_up, no_upstream=no_upstream)
+            param_names = ["a", "z", "b", "c", "k_link", "k_sgd", "gamma", "h_sea"]
+            h_mean = float(np.mean(h_obs))
+            k_sgd0 = 0.1
+            gamma0 = 0.1
+            h_sea0 = h_mean
+            base_p0 = np.array([a0, z0, b0, c0, k0, k_sgd0, gamma0, h_sea0], dtype=float)
+        else:
+            lower, upper = estimate_bounds_inland(h_obs, rainfall, amp, h_up, no_upstream=no_upstream)
+            param_names = ["a", "z", "b", "c", "k_link"]
+            base_p0 = np.array([a0, z0, b0, c0, k0], dtype=float)
+    elif model_name == "filtered":
+        model_func = sub.gw_model_wrapper_filtered
+        lambda_min, lambda_max = 0.01, 0.8
+        if is_coastal:
+            lower, upper = estimate_bounds_coastal(h_obs, rainfall, amp, amt, h_up, no_upstream=no_upstream)
+            param_names = ["a", "z", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "lambda"]
+            h_mean = float(np.mean(h_obs))
+            k_sgd0 = 0.1
+            gamma0 = 0.1
+            h_sea0 = h_mean
+            lambda0 = 0.2
+            base_p0 = np.array([a0, z0, b0, c0, k0, k_sgd0, gamma0, h_sea0, lambda0], dtype=float)
+        else:
+            lower, upper = estimate_bounds_inland(h_obs, rainfall, amp, h_up, no_upstream=no_upstream)
+            param_names = ["a", "z", "b", "c", "k_link", "lambda"]
+            lambda0 = 0.2
+            base_p0 = np.array([a0, z0, b0, c0, k0, lambda0], dtype=float)
+
+        lambda_min, lambda_max = _ensure_bounds_spread(lambda_min, lambda_max, min_width=0.05)
+        lower = list(lower) + [lambda_min]
+        upper = list(upper) + [lambda_max]
     else:
-        lower, upper = estimate_bounds_inland(h_obs, rainfall, amp, h_up, no_upstream=no_upstream)
-        param_names = ["a", "z", "b", "c", "k_link"]
-        base_p0 = np.array([a0, z0, b0, c0, k0], dtype=float)
+        raise ValueError(f"Unknown model_name: {model_name}")
 
     best_popt, best_pcov, best_rmse = random_multi_start(
-        model_func=sub.gw_model_wrapper,
+        model_func=model_func,
         xdata=t,
         ydata=h_obs,
         bounds=(lower, upper),
@@ -538,11 +569,10 @@ def calibrate_station(
     )
 
     if best_popt is None:
-        print("\nNo successful fit found in random_multi_start.")
-        return None, None, None, None, param_names
+        print(f"\nNo successful fit found for model '{model_name}'.")
+        return None
 
-    # Evaluate best fit
-    y_fit_best = sub.gw_model_wrapper(
+    y_fit_best = model_func(
         t,
         *best_popt,
         rainfall=rainfall,
@@ -556,14 +586,28 @@ def calibrate_station(
     r2 = float(r2_score(h_obs, y_fit_best))
 
     print("\n========================================================")
-    print(f"Group: {group_name} (coastal={is_coastal})")
+    print(f"Model: {model_name} | Group: {group_name} (coastal={is_coastal})")
     for name, val in zip(param_names, best_popt):
         print(f"  {name} = {val:.4f}")
     print(f"  RMSE = {rmse:.4f}")
     print(f"  R^2  = {r2:.4f}")
     print("========================================================\n")
 
-    return best_popt, best_pcov, rmse, r2, param_names
+    return {
+        "model": model_name,
+        "params": best_popt,
+        "param_names": param_names,
+        "rmse": rmse,
+        "r2": r2,
+        "y_fit": y_fit_best,
+        "t": t,
+        "rainfall": rainfall,
+        "amp": amp,
+        "amt": amt,
+        "h_up": h_up,
+        "h_obs": h_obs,
+        "is_coastal": is_coastal,
+    }
 
 
 if __name__ == "__main__":
@@ -575,110 +619,127 @@ if __name__ == "__main__":
     group_name = args.get('group_name', 'inland')
     lag_days = int(args.get('lag_days', 0))
 
-    best_popt, best_pcov, rmse, r2, param_names = calibrate_station(
-        df_merge,
-        group_name=group_name,
-        lag_days=lag_days,
-        no_upstream=no_upstream,
-        n_starts=10,
-    )
+    model_results = []
+    for model_name in ["base", "filtered"]:
+        result = _fit_model(
+            df_merge,
+            group_name=group_name,
+            lag_days=lag_days,
+            no_upstream=no_upstream,
+            n_starts=10,
+            model_name=model_name,
+        )
+        if result is not None:
+            model_results.append(result)
+
+    if not model_results:
+        print("No successful fit found for any model.")
+        sys.exit(1)
+
+    best_model = min(model_results, key=lambda item: item["rmse"])
 
     # Plot observed vs predicted groundwater levels for this station
-    if best_popt is not None:
-        t, rainfall, amp, amt, h_up, h_obs = fit_preprocess(df_merge, lag_days=lag_days)
-        is_coastal = group_name.lower() == "coastal"
-        y_fit_best = sub.gw_model_wrapper(
-            t,
-            *best_popt,
-            rainfall=rainfall,
-            amp=amp,
-            amt=amt if is_coastal else None,
-            h_up=h_up,
-            h0=float(h_obs[0]),
-            is_coastal=is_coastal,
-        )
+    station_label = args.get('st_id', args.get('gw_st', 'unknown'))
+    plot_index = df_merge.index[lag_days:]
 
-        station_label = args.get('st_id', args.get('gw_st', 'unknown'))
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    axes[0].plot(plot_index, best_model["h_obs"], label="Observed", color="k", linewidth=1.5)
+    for idx, result in enumerate(model_results):
+        label = f"{result['model']} (RMSE={result['rmse']:.3f}, R^2={result['r2']:.3f})"
+        axes[0].plot(plot_index, result["y_fit"], label=label, linewidth=1.2)
 
-        # Create subplots: (1) GW obs vs pred, (2) rainfall, (3) amp
-        fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
-        plot_index = df_merge.index[lag_days:]
+    axes[0].set_ylabel("GW level")
+    axes[0].set_title(f"GW {station_label} ({group_name})")
+    axes[0].legend()
 
-        # Top: groundwater levels
-        axes[0].plot(plot_index, h_obs, label="Observed", color="k", linewidth=1.5)
-        axes[0].plot(plot_index, y_fit_best, label="Predicted", color="C1", linewidth=1.2)
-        axes[0].set_ylabel("GW level")
-        axes[0].set_title(
-            f"GW {station_label} ({group_name})  "
-            f"RMSE={rmse:.3f}, R^2={r2:.3f}"
-        )
-        axes[0].legend()
+    axes[1].bar(plot_index, best_model["rainfall"], width=1.0, color="C0")
+    axes[1].set_ylabel("Rainfall")
 
-        # add upstream gwl
-        axes[0].plot(plot_index, h_up, label="Upstream GW", color="C3", linewidth=1.0, linestyle='--')
-        axes[0].legend()
+    axes[2].plot(plot_index, best_model["amp"], color="C2", linewidth=1.0)
+    axes[2].set_ylabel("AMP")
+    axes[2].set_xlabel("Date")
 
-        # Middle: rainfall
-        axes[1].bar(plot_index, rainfall, width=1.0, color="C0")
-        axes[1].set_ylabel("Rainfall")
+    fig.tight_layout()
 
-        # Bottom: amp
-        axes[2].plot(plot_index, amp, color="C2", linewidth=1.0)
-        axes[2].set_ylabel("AMP")
-        axes[2].set_xlabel("Date")
-
-        fig.tight_layout()
-
-        fig_dir = '../workspace/figures'
-        os.makedirs(fig_dir, exist_ok=True)
-        fig_path = os.path.join(fig_dir, f"gw_fit_{station_label}.png")
-        fig.savefig(fig_path, dpi=150)
-        plt.close(fig)
+    fig_dir = '../workspace/muli_model'
+    os.makedirs(fig_dir, exist_ok=True)
+    fig_path = os.path.join(fig_dir, f"gw_fit_{station_label}.png")
+    fig.savefig(fig_path, dpi=150)
+    plt.close(fig)
 
     # Optionally, save results to workspace
-    if best_popt is not None:
-        results = {
+    results = {
+        'st_id': args.get('st_id'),
+        'gw_st': args.get('gw_st'),
+        'ups_id': args.get('ups_id'),
+        'rf_id': args.get('rf_id'),
+        'group_name': group_name,
+        'lag_days': int(args.get('lag_days', 0)),
+        'rmse': best_model['rmse'],
+        'r2': best_model['r2'],
+        'model': best_model['model'],
+    }
+    for name, val in zip(best_model['param_names'], best_model['params']):
+        results[name] = float(val)
+    os.makedirs('../workspace', exist_ok=True)
+    out_path = '../workspace/gw_fit_results.csv'
+    new_row = pd.DataFrame([results])
+
+    if os.path.exists(out_path):
+        df_prev = pd.read_csv(out_path)
+
+        if 'st_id' not in df_prev.columns:
+            df_prev['st_id'] = ''
+
+        df_prev['rmse'] = pd.to_numeric(df_prev['rmse'], errors='coerce')
+        new_row['rmse'] = pd.to_numeric(new_row['rmse'], errors='coerce')
+
+        st_curr = str(results['st_id'])
+
+        if st_curr in df_prev['st_id'].astype(str).values:
+            mask = df_prev['st_id'].astype(str) == st_curr
+            prev_best = df_prev.loc[mask, :]
+            prev_best_rmse = prev_best['rmse'].min()
+
+            if results['rmse'] < prev_best_rmse:
+                df_prev = df_prev.loc[~mask, :]
+                df_all = pd.concat([df_prev, new_row], ignore_index=True)
+            else:
+                df_all = df_prev
+        else:
+            df_all = pd.concat([df_prev, new_row], ignore_index=True)
+    else:
+        df_all = new_row
+
+    df_all.to_csv(out_path, index=False)
+
+    compare_rows = []
+    for result in model_results:
+        param_dict = {name: float(val) for name, val in zip(result['param_names'], result['params'])}
+        compare_rows.append({
             'st_id': args.get('st_id'),
-            'gw_st': args.get('gw_st'),
             'ups_id': args.get('ups_id'),
             'rf_id': args.get('rf_id'),
-            'group_name': group_name,
+            'group': group_name,
             'lag_days': int(args.get('lag_days', 0)),
-            'rmse': rmse,
-            'r2': r2,
-        }
-        for name, val in zip(param_names, best_popt):
-            results[name] = val
-        os.makedirs('../workspace', exist_ok=True)
-        out_path = '../workspace/gw_fit_results.csv'
-        new_row = pd.DataFrame([results])
+            'model': result['model'],
+            'rmse': result['rmse'],
+            'r2': result['r2'],
+            'parameters': json.dumps(param_dict, ensure_ascii=False),
+        })
 
-        if os.path.exists(out_path):
-            df_prev = pd.read_csv(out_path)
+    compare_path = '../workspace/gw_fit_model_compare.csv'
+    df_compare_new = pd.DataFrame(compare_rows)
+    if os.path.exists(compare_path):
+        df_compare_prev = pd.read_csv(compare_path)
+        if 'st_id' not in df_compare_prev.columns:
+            df_compare_prev['st_id'] = ''
+        mask = (df_compare_prev['st_id'].astype(str) == str(args.get('st_id')))
+        if 'model' in df_compare_prev.columns:
+            mask = mask & (df_compare_prev['model'].astype(str).isin([r['model'] for r in compare_rows]))
+        df_compare_prev = df_compare_prev.loc[~mask, :]
+        df_compare_all = pd.concat([df_compare_prev, df_compare_new], ignore_index=True)
+    else:
+        df_compare_all = df_compare_new
 
-            if 'st_id' not in df_prev.columns:
-                df_prev['st_id'] = ''
-
-            # Ensure rmse is numeric
-            df_prev['rmse'] = pd.to_numeric(df_prev['rmse'], errors='coerce')
-            new_row['rmse'] = pd.to_numeric(new_row['rmse'], errors='coerce')
-
-            st_curr = str(results['st_id'])
-
-            if st_curr in df_prev['st_id'].astype(str).values:
-                mask = df_prev['st_id'].astype(str) == st_curr
-                prev_best = df_prev.loc[mask, :]
-                prev_best_rmse = prev_best['rmse'].min()
-
-                # If current is better (smaller RMSE), replace previous rows for this gw_no
-                if results['rmse'] < prev_best_rmse:
-                    df_prev = df_prev.loc[~mask, :]
-                    df_all = pd.concat([df_prev, new_row], ignore_index=True)
-                else:
-                    df_all = df_prev
-            else:
-                df_all = pd.concat([df_prev, new_row], ignore_index=True)
-        else:
-            df_all = new_row
-
-        #df_all.to_csv(out_path, index=False)
+    df_compare_all.to_csv(compare_path, index=False)
