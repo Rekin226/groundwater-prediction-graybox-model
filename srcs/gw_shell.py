@@ -266,12 +266,12 @@ def estimate_bounds_inland(
     R_short = rainfall[:-1]
     AMP_short = amp[:-1]
 
-    # b from rainfall correlation
+    # b from rainfall correlation (enforce non-negative recharge)
     valid_r = R_short != 0
     if np.any(valid_r) and np.var(R_short[valid_r]) > 0:
         b_est = np.cov(dh[valid_r], R_short[valid_r])[0, 1] / np.var(R_short[valid_r])
         width_b = max(0.5, abs(b_est))
-        b_min = min(0.0, b_est - width_b)
+        b_min = 0.0
         b_max = b_est + width_b
     else:
         b_est = 0.1
@@ -344,12 +344,12 @@ def estimate_bounds_coastal(
     AMP_short = amp[:-1]
     AMT_short = amt[:-1]
 
-    # b from rainfall correlation
+    # b from rainfall correlation (enforce non-negative recharge)
     valid_r = R_short != 0
     if np.any(valid_r) and np.var(R_short[valid_r]) > 0:
         b_est = np.cov(dh[valid_r], R_short[valid_r])[0, 1] / np.var(R_short[valid_r])
         width_b = max(0.5, abs(b_est))
-        b_min = min(0.0, b_est - width_b)
+        b_min = 0.0
         b_max = b_est + width_b
     else:
         b_est = 0.1
@@ -681,4 +681,4 @@ if __name__ == "__main__":
         else:
             df_all = new_row
 
-        df_all.to_csv(out_path, index=False)
+        #df_all.to_csv(out_path, index=False)
