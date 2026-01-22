@@ -1,0 +1,71 @@
+# -----------------------------
+# Project-specific (DO NOT COMMIT)
+# -----------------------------
+# Keep directories but ignore all contents
+/data/*
+!/data/.gitkeep
+
+/workspace/*
+!/workspace/.gitkeep
+
+/.github/
+
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# -----------------------------
+# Geo / data formats (often large / derived)
+# -----------------------------
+*.tif
+*.tiff
+*.grd
+*.asc
+*.nc
+*.h5
+*.hdf5
+*.parquet
+*.feather
