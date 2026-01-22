@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 
 
 def simulate_inland(
-	params: Tuple[float, float, float, float, float],
+	params: Tuple[float, float, float, float, float, float, float],
 	t: np.ndarray,
 	rainfall: np.ndarray,
 	amp: np.ndarray,
@@ -22,23 +22,36 @@ def simulate_inland(
 	# NOTE:
 	# - If using an upstream lag tau, pass h_up already aligned to the
 	#   simulation window (e.g., h_up_lagged[t] = h_up_original[t - tau]).
-	a, z, b, c, k_link = params
+	a, z, b, c, k_link, tau_rain, tau_up = params
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
+	max_lag = min(30, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
 	for i in range(1, n):
+		lag = min(i - 1, max_lag)
+		r_slice = rainfall[i - 1 - lag:i][::-1]
+		h_up_slice = h_up[i - 1 - lag:i][::-1]
+		w_r = wt_rain[: lag + 1]
+		w_u = wt_up[: lag + 1]
+		r_eff = float(np.sum(w_r * r_slice))
+		h_up_eff = float(np.sum(w_u * h_up_slice))
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)
-			+ b * rainfall[i - 1]
+			+ b * r_eff
 			- c * amp[i - 1]
-			+ k_link * (h_up[i - 1] - h_prev)
+			+ k_link * (h_up_eff - h_prev)
 		)
 	return h
 
 
 def simulate_coastal(
-	params: Tuple[float, float, float, float, float, float, float, float],
+	params: Tuple[float, float, float, float, float, float, float, float, float, float],
 	t: np.ndarray,
 	rainfall: np.ndarray,
 	amp: np.ndarray,
@@ -55,17 +68,30 @@ def simulate_coastal(
 	# NOTE:
 	# - If using an upstream lag tau, pass h_up already aligned to the
 	#   simulation window.
-	a, z, b, c, k_link, k_sgd, gamma, h_sea = params
+	a, z, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up = params
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
+	max_lag = min(30, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
 	for i in range(1, n):
+		lag = min(i - 1, max_lag)
+		r_slice = rainfall[i - 1 - lag:i][::-1]
+		h_up_slice = h_up[i - 1 - lag:i][::-1]
+		w_r = wt_rain[: lag + 1]
+		w_u = wt_up[: lag + 1]
+		r_eff = float(np.sum(w_r * r_slice))
+		h_up_eff = float(np.sum(w_u * h_up_slice))
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)
-			+ b * rainfall[i - 1]
+			+ b * r_eff
 			- c * amp[i - 1]
-			+ k_link * (h_up[i - 1] - h_prev)
+			+ k_link * (h_up_eff - h_prev)
 			- k_sgd * (h_prev - h_sea)
 			+ gamma * amt[i - 1]
 		)
@@ -73,7 +99,7 @@ def simulate_coastal(
 
 
 def simulate_inland_filtered(
-	params: Tuple[float, float, float, float, float, float],
+	params: Tuple[float, float, float, float, float, float, float, float],
 	t: np.ndarray,
 	rainfall: np.ndarray,
 	amp: np.ndarray,
@@ -87,25 +113,38 @@ def simulate_inland_filtered(
 	# NOTE:
 	# - If using upstream lag tau, pass h_up already aligned to the
 	#   simulation window.
-	a, z, b, c, k_link, lam = params
+	a, z, b, c, k_link, lam, tau_rain, tau_up = params
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
+	max_lag = min(30, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	for i in range(1, n):
+		lag = min(i - 1, max_lag)
+		r_slice = rainfall[i - 1 - lag:i][::-1]
+		h_up_slice = h_up[i - 1 - lag:i][::-1]
+		w_r = wt_rain[: lag + 1]
+		w_u = wt_up[: lag + 1]
+		r_eff = float(np.sum(w_r * r_slice))
+		h_up_eff = float(np.sum(w_u * h_up_slice))
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)
-			+ b * rainfall[i - 1]
+			+ b * r_eff
 			- c * amp[i - 1]
 			+ k_link * (u - h_prev)
 		)
-		u = (1.0 - lam) * u + lam * h_up[i - 1]
+		u = (1.0 - lam) * u + lam * h_up_eff
 	return h
 
 
 def simulate_coastal_filtered(
-	params: Tuple[float, float, float, float, float, float, float, float, float],
+	params: Tuple[float, float, float, float, float, float, float, float, float, float, float],
 	t: np.ndarray,
 	rainfall: np.ndarray,
 	amp: np.ndarray,
@@ -121,22 +160,35 @@ def simulate_coastal_filtered(
 	# NOTE:
 	# - If using upstream lag tau, pass h_up already aligned to the
 	#   simulation window.
-	a, z, b, c, k_link, k_sgd, gamma, h_sea, lam = params
+	a, z, b, c, k_link, k_sgd, gamma, h_sea, lam, tau_rain, tau_up = params
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
+	max_lag = min(30, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	for i in range(1, n):
+		lag = min(i - 1, max_lag)
+		r_slice = rainfall[i - 1 - lag:i][::-1]
+		h_up_slice = h_up[i - 1 - lag:i][::-1]
+		w_r = wt_rain[: lag + 1]
+		w_u = wt_up[: lag + 1]
+		r_eff = float(np.sum(w_r * r_slice))
+		h_up_eff = float(np.sum(w_u * h_up_slice))
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)
-			+ b * rainfall[i - 1]
+			+ b * r_eff
 			- c * amp[i - 1]
 			+ k_link * (u - h_prev)
 			- k_sgd * (h_prev - h_sea)
 			+ gamma * amt[i - 1]
 		)
-		u = (1.0 - lam) * u + lam * h_up[i - 1]
+		u = (1.0 - lam) * u + lam * h_up_eff
 	return h
 
 
@@ -160,8 +212,8 @@ def gw_model_wrapper(
 	t : np.ndarray
 		Time index (0..N-1).
 	*params : float
-		Model parameters. For inland: (a, z, b, c, k_link).
-		For coastal: (a, z, b, c, k_link, k_sgd, gamma, h_sea).
+		Model parameters. For inland: (a, z, b, c, k_link, tau_rain, tau_up).
+		For coastal: (a, z, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up).
 	rainfall, amp, amt, h_up : np.ndarray
 		Input series used by the groundwater model. If using upstream lag tau,
 		pass a lagged/trimmed `h_up` aligned to the calibration window.
@@ -208,8 +260,8 @@ def gw_model_wrapper_filtered(
 	t : np.ndarray
 		Time index (0..N-1).
 	*params : float
-		Model parameters. For inland: (a, z, b, c, k_link, lambda).
-		For coastal: (a, z, b, c, k_link, k_sgd, gamma, h_sea, lambda).
+		Model parameters. For inland: (a, z, b, c, k_link, lambda, tau_rain, tau_up).
+		For coastal: (a, z, b, c, k_link, k_sgd, gamma, h_sea, lambda, tau_rain, tau_up).
 	rainfall, amp, amt, h_up : np.ndarray
 		Input series used by the groundwater model. If using upstream lag tau,
 		pass a lagged/trimmed `h_up` aligned to the calibration window.

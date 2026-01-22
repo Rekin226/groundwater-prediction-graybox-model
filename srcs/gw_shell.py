@@ -63,7 +63,6 @@ def prepare_data(args_params):
     if rf_id is None:
         raise KeyError("Missing 'rf_id' argument")
 
-    lag_days = int(args_params.get('lag_days', 0))
 
     df_gw_hourly = pd.read_csv(
         GW_DATA_PATH,
@@ -99,8 +98,6 @@ def prepare_data(args_params):
     if rf_id not in df_rf_daily.columns:
         raise KeyError(f"Rainfall id {rf_id} not found in rf_data.csv")
     df_rf = df_rf_daily[[rf_id]].rename(columns={rf_id: 'rf'})
-    if lag_days != 0:
-        df_rf = df_rf.shift(lag_days)
 
     if st_id not in df_gw_hourly.columns:
         raise KeyError(f"Station id {st_id} not found in hourly groundwater data")
@@ -128,31 +125,61 @@ def prepare_data(args_params):
 
     return df_merge, no_upstream
 
-def fit_preprocess(df_merge: pd.DataFrame, lag_days: int = 0) -> Tuple:
-    if lag_days < 0:
-        raise ValueError("lag_days must be non-negative")
-    if lag_days >= len(df_merge):
-        raise ValueError("lag_days is too large for available data length")
+def fit_preprocess(df_merge: pd.DataFrame, rain_lag_days: int = 0, up_lag_days: int = 0) -> Tuple:
+    if rain_lag_days < 0 or up_lag_days < 0:
+        raise ValueError("lag days must be non-negative")
+    if max(rain_lag_days, up_lag_days) >= len(df_merge):
+        raise ValueError("lag days is too large for available data length")
 
-    rainfall = df_merge['rf'].values
-    amp = df_merge['amp'].values
-    amt = df_merge['amt'].values
-    h_up = df_merge['ups_gwl'].values
-    h_obs = df_merge['gwl'].values
+    df = df_merge.copy()
+    if rain_lag_days != 0:
+        df['rf'] = df['rf'].shift(rain_lag_days)
+    if up_lag_days != 0:
+        df['ups_gwl'] = df['ups_gwl'].shift(up_lag_days)
 
-    if lag_days == 0:
-        t = np.arange(len(df_merge))
-        return t, rainfall, amp, amt, h_up, h_obs
+    df = df.dropna()
+    if df.empty:
+        raise ValueError("No overlapping records after applying lags")
 
-    # Truncate calibration window to start at t = lag_days and align lagged upstream
-    h_obs_trunc = h_obs[lag_days:]
-    rainfall_trunc = rainfall[lag_days:]
-    amp_trunc = amp[lag_days:]
-    amt_trunc = amt[lag_days:]
-    h_up_lag = h_up[: len(h_obs_trunc)]
-    t = np.arange(len(h_obs_trunc))
+    rainfall = df['rf'].values
+    amp = df['amp'].values
+    amt = df['amt'].values
+    h_up = df['ups_gwl'].values
+    h_obs = df['gwl'].values
+    t = np.arange(len(df))
+    time_index = df.index
 
-    return t, rainfall_trunc, amp_trunc, amt_trunc, h_up_lag, h_obs_trunc
+    return t, rainfall, amp, amt, h_up, h_obs, time_index
+
+
+def estimate_upstream_lag(h_obs: np.ndarray, h_up: np.ndarray, max_lag: int = 45) -> int:
+    if len(h_obs) < 3 or len(h_up) < 3:
+        return 0
+    dh_obs = h_obs[1:] - h_obs[:-1]
+    dh_up = h_up[1:] - h_up[:-1]
+    best_lag = 0
+    best_score = -np.inf
+    for lag in range(0, max_lag + 1):
+        if lag == 0:
+            x = dh_up
+            y = dh_obs
+        else:
+            if lag >= len(dh_obs):
+                break
+            x = dh_up[:-lag]
+            y = dh_obs[lag:]
+        if len(x) < 10:
+            continue
+        if np.var(x) == 0 or np.var(y) == 0:
+            continue
+        corr = np.corrcoef(x, y)[0, 1]
+        if np.isnan(corr):
+            continue
+        score = abs(corr)
+        if score > best_score:
+            best_score = score
+            best_lag = lag
+    return best_lag
 
 ###############################################################################
 # Parameter bounds estimation
@@ -251,7 +278,7 @@ def estimate_bounds_inland(
 ) -> Tuple[List[float], List[float]]:
     """Estimate parameter bounds for the inland model.
 
-    Parameters correspond to (a, z, b, c, k_link).
+    Parameters correspond to (a, z, b, c, k_link, tau_rain, tau_up).
     """
     h_min = float(np.min(h_obs))
     h_max = float(np.max(h_obs))
@@ -304,15 +331,19 @@ def estimate_bounds_inland(
     k_min, k_max = _ensure_bounds_spread(k_min, k_max, min_width=0.01)
 
     z_min, z_max = _ensure_bounds_spread(z_min, z_max, min_width=0.5)
-    param_lower_bounds = [a_min, z_min, b_min, c_min, k_min]
-    param_upper_bounds = [a_max, z_max, b_max, c_max, k_max]
+    tau_rain_min, tau_rain_max = 0.1, 30.0
+    tau_up_min, tau_up_max = 0.1, 30.0
+    param_lower_bounds = [a_min, z_min, b_min, c_min, k_min, tau_rain_min, tau_up_min]
+    param_upper_bounds = [a_max, z_max, b_max, c_max, k_max, tau_rain_max, tau_up_max]
 
-    print("\nInland parameter bounds (a, z, b, c, k_link):")
+    print("\nInland parameter bounds (a, z, b, c, k_link, tau_rain, tau_up):")
     print(f"  a in [{a_min}, {a_max}]")
     print(f"  z in [{z_min}, {z_max}]")
     print(f"  b in [{b_min}, {b_max}] (est={b_est:.3f})")
     print(f"  c in [{c_min}, {c_max}] (est={c_est:.3f})")
     print(f"  k_link in [{k_min}, {k_max}]")
+    print(f"  tau_rain in [{tau_rain_min}, {tau_rain_max}]")
+    print(f"  tau_up in [{tau_up_min}, {tau_up_max}]")
 
     return param_lower_bounds, param_upper_bounds
 
@@ -327,7 +358,7 @@ def estimate_bounds_coastal(
 ) -> Tuple[List[float], List[float]]:
     """Estimate parameter bounds for the coastal model.
 
-    Parameters correspond to (a, z, b, c, k_link, k_sgd, gamma, h_sea).
+    Parameters correspond to (a, z, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up).
     """
     h_min = float(np.min(h_obs))
     h_max = float(np.max(h_obs))
@@ -405,10 +436,34 @@ def estimate_bounds_coastal(
     h_sea_min, h_sea_max = _ensure_bounds_spread(h_sea_min, h_sea_max, min_width=0.5)
 
     z_min, z_max = _ensure_bounds_spread(z_min, z_max, min_width=0.5)
-    param_lower_bounds = [a_min, z_min, b_min, c_min, k_min, k_sgd_min, g_min, h_sea_min]
-    param_upper_bounds = [a_max, z_max, b_max, c_max, k_max, k_sgd_max, g_max, h_sea_max]
+    tau_rain_min, tau_rain_max = 0.1, 30.0
+    tau_up_min, tau_up_max = 0.1, 30.0
+    param_lower_bounds = [
+        a_min,
+        z_min,
+        b_min,
+        c_min,
+        k_min,
+        k_sgd_min,
+        g_min,
+        h_sea_min,
+        tau_rain_min,
+        tau_up_min,
+    ]
+    param_upper_bounds = [
+        a_max,
+        z_max,
+        b_max,
+        c_max,
+        k_max,
+        k_sgd_max,
+        g_max,
+        h_sea_max,
+        tau_rain_max,
+        tau_up_max,
+    ]
 
-    print("\nCoastal parameter bounds (a, z, b, c, k_link, k_sgd, gamma, h_sea):")
+    print("\nCoastal parameter bounds (a, z, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up):")
     print(f"  a in [{a_min}, {a_max}]")
     print(f"  z in [{z_min}, {z_max}]")
     print(f"  b in [{b_min}, {b_max}] (est={b_est:.3f})")
@@ -417,6 +472,8 @@ def estimate_bounds_coastal(
     print(f"  k_sgd in [{k_sgd_min}, {k_sgd_max}]")
     print(f"  gamma in [{g_min}, {g_max}] (est={g_est:.3f})")
     print(f"  h_sea in [{h_sea_min}, {h_sea_max}] around mean gw={h_mean:.2f}")
+    print(f"  tau_rain in [{tau_rain_min}, {tau_rain_max}]")
+    print(f"  tau_up in [{tau_up_min}, {tau_up_max}]")
 
     return param_lower_bounds, param_upper_bounds
 
@@ -497,12 +554,17 @@ def random_multi_start(
 def _fit_model(
     df_merge: pd.DataFrame,
     group_name: str,
-    lag_days: int,
+    rain_lag_days: int,
+    up_lag_days: int,
     no_upstream: bool,
     n_starts: int,
     model_name: str,
 ):
-    t, rainfall, amp, amt, h_up, h_obs = fit_preprocess(df_merge, lag_days=lag_days)
+    t, rainfall, amp, amt, h_up, h_obs, time_index = fit_preprocess(
+        df_merge,
+        rain_lag_days=rain_lag_days,
+        up_lag_days=up_lag_days,
+    )
     h0 = float(h_obs[0])
     is_coastal = group_name.lower() == "coastal"
 
@@ -515,37 +577,69 @@ def _fit_model(
         no_upstream=no_upstream,
     )
 
+    tau_rain0 = 5.0
+    tau_up0 = 5.0
+
     if model_name == "base":
         model_func = sub.gw_model_wrapper
         if is_coastal:
             lower, upper = estimate_bounds_coastal(h_obs, rainfall, amp, amt, h_up, no_upstream=no_upstream)
-            param_names = ["a", "z", "b", "c", "k_link", "k_sgd", "gamma", "h_sea"]
+            param_names = [
+                "a",
+                "z",
+                "b",
+                "c",
+                "k_link",
+                "k_sgd",
+                "gamma",
+                "h_sea",
+                "tau_rain",
+                "tau_up",
+            ]
             h_mean = float(np.mean(h_obs))
             k_sgd0 = 0.1
             gamma0 = 0.1
             h_sea0 = h_mean
-            base_p0 = np.array([a0, z0, b0, c0, k0, k_sgd0, gamma0, h_sea0], dtype=float)
+            base_p0 = np.array(
+                [a0, z0, b0, c0, k0, k_sgd0, gamma0, h_sea0, tau_rain0, tau_up0],
+                dtype=float,
+            )
         else:
             lower, upper = estimate_bounds_inland(h_obs, rainfall, amp, h_up, no_upstream=no_upstream)
-            param_names = ["a", "z", "b", "c", "k_link"]
-            base_p0 = np.array([a0, z0, b0, c0, k0], dtype=float)
+            param_names = ["a", "z", "b", "c", "k_link", "tau_rain", "tau_up"]
+            base_p0 = np.array([a0, z0, b0, c0, k0, tau_rain0, tau_up0], dtype=float)
     elif model_name == "filtered":
         model_func = sub.gw_model_wrapper_filtered
         lambda_min, lambda_max = 0.01, 0.8
         if is_coastal:
             lower, upper = estimate_bounds_coastal(h_obs, rainfall, amp, amt, h_up, no_upstream=no_upstream)
-            param_names = ["a", "z", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "lambda"]
+            param_names = [
+                "a",
+                "z",
+                "b",
+                "c",
+                "k_link",
+                "k_sgd",
+                "gamma",
+                "h_sea",
+                "lambda",
+                "tau_rain",
+                "tau_up",
+            ]
             h_mean = float(np.mean(h_obs))
             k_sgd0 = 0.1
             gamma0 = 0.1
             h_sea0 = h_mean
             lambda0 = 0.2
-            base_p0 = np.array([a0, z0, b0, c0, k0, k_sgd0, gamma0, h_sea0, lambda0], dtype=float)
+            base_p0 = np.array(
+                [a0, z0, b0, c0, k0, k_sgd0, gamma0, h_sea0, lambda0, tau_rain0, tau_up0],
+                dtype=float,
+            )
         else:
             lower, upper = estimate_bounds_inland(h_obs, rainfall, amp, h_up, no_upstream=no_upstream)
-            param_names = ["a", "z", "b", "c", "k_link", "lambda"]
+            param_names = ["a", "z", "b", "c", "k_link", "lambda", "tau_rain", "tau_up"]
             lambda0 = 0.2
-            base_p0 = np.array([a0, z0, b0, c0, k0, lambda0], dtype=float)
+            base_p0 = np.array([a0, z0, b0, c0, k0, lambda0, tau_rain0, tau_up0], dtype=float)
 
         lambda_min, lambda_max = _ensure_bounds_spread(lambda_min, lambda_max, min_width=0.05)
         lower = list(lower) + [lambda_min]
@@ -607,6 +701,7 @@ def _fit_model(
         "h_up": h_up,
         "h_obs": h_obs,
         "is_coastal": is_coastal,
+        "time_index": time_index,
     }
 
 
@@ -617,14 +712,26 @@ if __name__ == "__main__":
     print('Prepared data (head):')
     print(df_merge.head())
     group_name = args.get('group_name', 'inland')
-    lag_days = int(args.get('lag_days', 0))
+    rain_lag_days = int(args.get('lag_days', 0))
+    up_lag_arg = args.get('ups_lag_days')
+    if no_upstream:
+        up_lag_days = 0
+    elif up_lag_arg is not None:
+        up_lag_days = int(up_lag_arg)
+    else:
+        up_lag_days = estimate_upstream_lag(
+            df_merge['gwl'].values,
+            df_merge['ups_gwl'].values,
+            max_lag=45,
+        )
 
     model_results = []
     for model_name in ["base", "filtered"]:
         result = _fit_model(
             df_merge,
             group_name=group_name,
-            lag_days=lag_days,
+            rain_lag_days=rain_lag_days,
+            up_lag_days=up_lag_days,
             no_upstream=no_upstream,
             n_starts=10,
             model_name=model_name,
@@ -640,7 +747,7 @@ if __name__ == "__main__":
 
     # Plot observed vs predicted groundwater levels for this station
     station_label = args.get('st_id', args.get('gw_st', 'unknown'))
-    plot_index = df_merge.index[lag_days:]
+    plot_index = best_model["time_index"]
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
     axes[0].plot(plot_index, best_model["h_obs"], label="Observed", color="k", linewidth=1.5)
@@ -674,7 +781,8 @@ if __name__ == "__main__":
         'ups_id': args.get('ups_id'),
         'rf_id': args.get('rf_id'),
         'group_name': group_name,
-        'lag_days': int(args.get('lag_days', 0)),
+        'rain_lag_days': rain_lag_days,
+        'up_lag_days': up_lag_days,
         'rmse': best_model['rmse'],
         'r2': best_model['r2'],
         'model': best_model['model'],
@@ -721,7 +829,8 @@ if __name__ == "__main__":
             'ups_id': args.get('ups_id'),
             'rf_id': args.get('rf_id'),
             'group': group_name,
-            'lag_days': int(args.get('lag_days', 0)),
+            'rain_lag_days': rain_lag_days,
+            'up_lag_days': up_lag_days,
             'model': result['model'],
             'rmse': result['rmse'],
             'r2': result['r2'],
