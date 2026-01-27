@@ -1,21 +1,25 @@
 import pandas as pd
-import matplotlib.pyplot as plt
+
+# gw_fit_results.csv path
+csv_path = "../workspace/gw_fit_results.csv"
 
 
-# read rf_data.csv and plot the first rf1 column as a time series
-def plot_rf_data(rf_data_path: str):
-    df_rf = pd.read_csv(rf_data_path, parse_dates=['date time'])
-    df_rf = df_rf.set_index('date time')
-    if 'rf1' not in df_rf.columns:
-        print("Column 'rf1' not found in rf_data.csv")
-        return
-    plt.figure(figsize=(12, 6))
-    plt.plot(df_rf.index, df_rf['rf1'], label='Rainfall (rf1)', color='blue')
-    plt.xlabel('Date')
-    plt.ylabel('Rainfall')
-    plt.title('Rainfall Time Series for rf1')
-    plt.legend()
-    plt.grid()
-    plt.show()
+def load_gw_fit_results(path: str) -> pd.DataFrame:
+	return pd.read_csv(path)
+
+
+def sort_by_r2(df: pd.DataFrame) -> pd.DataFrame:
+	return df.sort_values(by="r2", ascending=True)
+
+
+def filter_r2_below(df: pd.DataFrame, threshold: float) -> pd.DataFrame:
+	return df[df["r2"] < threshold]
+
+
 if __name__ == "__main__":
-    plot_rf_data('../data/rf_data.csv')
+	df = load_gw_fit_results(csv_path)
+	df_sorted = sort_by_r2(df)
+	df_filtered = filter_r2_below(df_sorted, threshold=0.5)
+	print(df_filtered)
+	df_filtered.to_csv("../workspace/gw_fit_results_r2_below_0p5.csv", index=False)
+

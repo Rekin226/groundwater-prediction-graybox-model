@@ -181,6 +181,35 @@ def estimate_upstream_lag(h_obs: np.ndarray, h_up: np.ndarray, max_lag: int = 45
             best_lag = lag
     return best_lag
 
+
+def estimate_rain_lag(h_obs: np.ndarray, rainfall: np.ndarray, max_lag: int = 45) -> int:
+    if len(h_obs) < 3 or len(rainfall) < 3:
+        return 0
+    dh_obs = h_obs[1:] - h_obs[:-1]
+    best_lag = 0
+    best_score = -np.inf
+    for lag in range(0, max_lag + 1):
+        if lag == 0:
+            x = rainfall[:-1]
+            y = dh_obs
+        else:
+            if lag >= len(dh_obs):
+                break
+            x = rainfall[:-1 - lag]
+            y = dh_obs[lag:]
+        if len(x) < 10:
+            continue
+        if np.var(x) == 0 or np.var(y) == 0:
+            continue
+        corr = np.corrcoef(x, y)[0, 1]
+        if np.isnan(corr):
+            continue
+        score = abs(corr)
+        if score > best_score:
+            best_score = score
+            best_lag = lag
+    return best_lag
+
 ###############################################################################
 # Parameter bounds estimation
 ###############################################################################
@@ -712,8 +741,20 @@ if __name__ == "__main__":
     print('Prepared data (head):')
     print(df_merge.head())
     group_name = args.get('group_name', 'inland')
-    rain_lag_days = int(args.get('lag_days', 0))
+    lag_hint = int(args.get('lag_days', 0))
+    max_lag = max(45, lag_hint)
+    rain_lag_arg = args.get('rain_lag_days')
     up_lag_arg = args.get('ups_lag_days')
+
+    if rain_lag_arg is not None:
+        rain_lag_days = int(rain_lag_arg)
+    else:
+        rain_lag_days = estimate_rain_lag(
+            df_merge['gwl'].values,
+            df_merge['rf'].values,
+            max_lag=max_lag,
+        )
+
     if no_upstream:
         up_lag_days = 0
     elif up_lag_arg is not None:
@@ -722,7 +763,7 @@ if __name__ == "__main__":
         up_lag_days = estimate_upstream_lag(
             df_merge['gwl'].values,
             df_merge['ups_gwl'].values,
-            max_lag=45,
+            max_lag=max_lag,
         )
 
     model_results = []
