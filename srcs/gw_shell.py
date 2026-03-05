@@ -517,12 +517,19 @@ def random_multi_start(
     ydata: np.ndarray,
     bounds: Tuple[List[float], List[float]],
     n_starts: int = 10,
+    patience: int = 5,
     base_p0: np.ndarray = None,
     **model_kwargs,
 ):
     """Perform multiple random starts of curve_fit within the given bounds.
 
     Returns the best parameters (lowest RMSE) and covariance.
+
+    Parameters
+    ----------
+    patience : int
+        Stop early if this many consecutive starts fail to improve the best
+        RMSE.  Set to ``n_starts`` to disable early stopping.
     """
     lower, upper = bounds
     lower_arr = np.array(lower, dtype=float)
@@ -536,6 +543,7 @@ def random_multi_start(
     best_rmse = np.inf
     best_popt = None
     best_pcov = None
+    no_improve = 0  # consecutive starts without improvement
 
     for i in range(n_starts):
         # Use regression-based guess for the first start if provided
@@ -551,6 +559,10 @@ def random_multi_start(
             y0 = model_func(xdata, *guess, **model_kwargs)
             if not np.all(np.isfinite(y0)):
                 print(f"Start {i+1}: FAILED due to non-finite initial simulation")
+                no_improve += 1
+                if no_improve >= patience:
+                    print(f"Early stopping after {i+1} starts (no improvement for {patience} consecutive starts).")
+                    break
                 continue
             popt_i, pcov_i = curve_fit(
                 f=lambda tt, *pp: model_func(tt, *pp, **model_kwargs),
@@ -569,8 +581,18 @@ def random_multi_start(
                 best_rmse = rmse_i
                 best_popt = popt_i
                 best_pcov = pcov_i
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= patience:
+                    print(f"Early stopping after {i+1} starts (no improvement for {patience} consecutive starts).")
+                    break
         except (RuntimeError, ValueError) as e:
             print(f"Start {i+1}: FAILED due to {e}")
+            no_improve += 1
+            if no_improve >= patience:
+                print(f"Early stopping after {i+1} starts (no improvement for {patience} consecutive starts).")
+                break
             continue
 
     return best_popt, best_pcov, best_rmse

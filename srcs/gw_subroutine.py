@@ -32,14 +32,13 @@ def simulate_inland(
 	lag_idx = np.arange(max_lag + 1, dtype=float)
 	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
 	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	# Pre-compute weighted sums for all time steps at once (vectorised).
+	# r_conv[i-1] = sum_{τ=0}^{min(i-1, max_lag)} wt_rain[τ] * rainfall[i-1-τ]
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
 	for i in range(1, n):
-		lag = min(i - 1, max_lag)
-		r_slice = rainfall[i - 1 - lag:i][::-1]
-		h_up_slice = h_up[i - 1 - lag:i][::-1]
-		w_r = wt_rain[: lag + 1]
-		w_u = wt_up[: lag + 1]
-		r_eff = float(np.sum(w_r * r_slice))
-		h_up_eff = float(np.sum(w_u * h_up_slice))
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)
@@ -78,14 +77,12 @@ def simulate_coastal(
 	lag_idx = np.arange(max_lag + 1, dtype=float)
 	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
 	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	# Pre-compute weighted sums for all time steps at once (vectorised).
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
 	for i in range(1, n):
-		lag = min(i - 1, max_lag)
-		r_slice = rainfall[i - 1 - lag:i][::-1]
-		h_up_slice = h_up[i - 1 - lag:i][::-1]
-		w_r = wt_rain[: lag + 1]
-		w_u = wt_up[: lag + 1]
-		r_eff = float(np.sum(w_r * r_slice))
-		h_up_eff = float(np.sum(w_u * h_up_slice))
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)
@@ -123,15 +120,13 @@ def simulate_inland_filtered(
 	lag_idx = np.arange(max_lag + 1, dtype=float)
 	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
 	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	# Pre-compute weighted sums for all time steps at once (vectorised).
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	for i in range(1, n):
-		lag = min(i - 1, max_lag)
-		r_slice = rainfall[i - 1 - lag:i][::-1]
-		h_up_slice = h_up[i - 1 - lag:i][::-1]
-		w_r = wt_rain[: lag + 1]
-		w_u = wt_up[: lag + 1]
-		r_eff = float(np.sum(w_r * r_slice))
-		h_up_eff = float(np.sum(w_u * h_up_slice))
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)
@@ -170,15 +165,13 @@ def simulate_coastal_filtered(
 	lag_idx = np.arange(max_lag + 1, dtype=float)
 	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
 	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	# Pre-compute weighted sums for all time steps at once (vectorised).
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	for i in range(1, n):
-		lag = min(i - 1, max_lag)
-		r_slice = rainfall[i - 1 - lag:i][::-1]
-		h_up_slice = h_up[i - 1 - lag:i][::-1]
-		w_r = wt_rain[: lag + 1]
-		w_u = wt_up[: lag + 1]
-		r_eff = float(np.sum(w_r * r_slice))
-		h_up_eff = float(np.sum(w_u * h_up_slice))
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		h[i] = h_prev + (
 			-a * (h_prev - z)

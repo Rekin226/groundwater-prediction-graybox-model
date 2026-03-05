@@ -1,6 +1,10 @@
 # -----------------------------
 # Project-specific (DO NOT COMMIT)
 # -----------------------------
+# Environment variables (API keys, secrets)
+.env
+.env.local
+
 # Keep directories but ignore all contents
 /data/*
 !/data/.gitkeep
