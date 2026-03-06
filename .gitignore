@@ -8,6 +8,7 @@
 # Keep directories but ignore all contents
 /data/*
 !/data/.gitkeep
+/docs/*
 
 /workspace/*
 !/workspace/.gitkeep
