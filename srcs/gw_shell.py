@@ -105,11 +105,11 @@ def prepare_data(args_params):
     df_amp, df_amt = _compute_amp_amt(hourly_series)
     df_amp = df_amp.reindex(df_gw.index)
     df_amp = df_amp.interpolate(method='linear', limit_direction='both')
-    df_amp = df_amp.fillna(method='ffill').fillna(method='bfill')
+    df_amp = df_amp.ffill().bfill()
 
     df_amt = df_amt.reindex(df_gw.index)
     df_amt = df_amt.interpolate(method='linear', limit_direction='both')
-    df_amt = df_amt.fillna(method='ffill').fillna(method='bfill')
+    df_amt = df_amt.ffill().bfill()
 
     df_merge = (
         df_gw
