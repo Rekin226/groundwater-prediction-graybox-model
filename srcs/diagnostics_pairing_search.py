@@ -236,7 +236,7 @@ def rank_ups_candidates(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Search alternative rf_id/ups_id pairings for low-R² stations.")
-    parser.add_argument("--fit-results", default="workspace/gw_fit_results.csv")
+    parser.add_argument("--fit-results", default="workspace/results/gw_fit_results.csv")
     parser.add_argument("--gray-box-input", default="data/gray_box_input.csv")
     parser.add_argument("--r2-threshold", type=float, default=0.5)
     parser.add_argument("--max-lag", type=int, default=45)
@@ -244,8 +244,8 @@ def main() -> int:
     parser.add_argument("--top-k-ups", type=int, default=3)
     parser.add_argument("--n-starts", type=int, default=4)
     parser.add_argument("--passes", type=int, default=2, help="Coordinate-descent passes (rf then ups).")
-    parser.add_argument("--output-summary", default="workspace/pairing_search_summary.csv")
-    parser.add_argument("--output-trials", default="workspace/pairing_search_trials.csv")
+    parser.add_argument("--output-summary", default="workspace/diagnostics/pairing_search_summary.csv")
+    parser.add_argument("--output-trials", default="workspace/diagnostics/pairing_search_trials.csv")
 
     args = parser.parse_args()
 

@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,11 @@ from scipy.signal import butter, filtfilt
 import geopandas as gpd
 from shapely.geometry import Point
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from adjustText import adjust_text
+
+sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
+from rklib import StationMapFig, setup_font, savefig as rklib_savefig
 
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -203,27 +209,26 @@ def main() -> None:
 	df_st = pd.read_csv(gw_meta_path)
 
 	# Expect at least: Station, st_id, TM_X97, TM_Y97
-	required_cols = {"Station", "TM_X97", "TM_Y97"}
+	required_cols = {"Station", "st_id", "TM_X97", "TM_Y97"}
 	missing_cols = required_cols - set(df_st.columns)
 	if missing_cols:
 		raise KeyError(f"Missing required columns in input_gw_st.csv: {missing_cols}")
 
-	# Ensure Station is string and strip leading zeros for consistency
+	# Ensure Station is string; st_id is used to match time-series columns
 	df_st["Station"] = df_st["Station"].astype(str).str.lstrip("0")
+	df_st["st_id"] = df_st["st_id"].astype(str)
 
 	# 2. Load groundwater time series
 	logging.info("Reading groundwater time series from %s", gw_ts_path)
 	df_gw = pd.read_csv(gw_ts_path, index_col=0, parse_dates=True)
+	df_gw.columns = df_gw.columns.astype(str)
 
-	# Align column naming with Station IDs (strip leading zeros)
-	df_gw.columns = df_gw.columns.astype(str).str.lstrip("0")
-
-	# Keep only stations that have both metadata and time series
-	common_stations = sorted(set(df_st["Station"]) & set(df_gw.columns))
+	# Keep only stations that have both metadata and time series (match on st_id)
+	common_stations = sorted(set(df_st["st_id"]) & set(df_gw.columns))
 	if not common_stations:
 		raise RuntimeError("No overlapping stations between input_gw_st.csv and gw_data.csv")
 
-	df_st = df_st[df_st["Station"].isin(common_stations)].reset_index(drop=True)
+	df_st = df_st[df_st["st_id"].isin(common_stations)].reset_index(drop=True)
 	df_gw = df_gw[common_stations]
 
 	logging.info("Number of stations with both metadata and time series: %d", len(common_stations))
@@ -249,7 +254,7 @@ def main() -> None:
 			logging.warning("Station %s: insufficient data for FFT (n=%d)", station, len(series))
 			records.append(
 				{
-					"Station": station,
+					"st_id": station,
 					"dom_freq_cpd": np.nan,
 					"dom_amp": np.nan,
 					"m2_freq_cpd": np.nan,
@@ -267,7 +272,7 @@ def main() -> None:
 			logging.warning("Station %s: high-pass filter failed (%s)", station, e)
 			records.append(
 				{
-					"Station": station,
+					"st_id": station,
 					"dom_freq_cpd": np.nan,
 					"dom_amp": np.nan,
 					"m2_freq_cpd": np.nan,
@@ -282,7 +287,7 @@ def main() -> None:
 			logging.warning("Station %s: FFT returned no usable peaks", station)
 			records.append(
 				{
-					"Station": station,
+					"st_id": station,
 					"dom_freq_cpd": np.nan,
 					"dom_amp": np.nan,
 					"m2_freq_cpd": np.nan,
@@ -309,7 +314,7 @@ def main() -> None:
 
 		records.append(
 			{
-				"Station": station,
+				"st_id": station,
 				"dom_freq_cpd": dom_freq,
 				"dom_amp": dom_amp,
 				"m2_freq_cpd": m2_freq,
@@ -321,7 +326,7 @@ def main() -> None:
 	df_freq = pd.DataFrame.from_records(records)
 
 	# 5. Merge and classify stations into coastal / inland
-	df_result = df_st.merge(df_freq, on="Station", how="left")
+	df_result = df_st.merge(df_freq, on="st_id", how="left")
 
 	df_result["group"] = "inland"
 	mask_coastal = df_result["is_near_coast"] & df_result["is_m2_like"]
@@ -372,54 +377,93 @@ def main() -> None:
 	except Exception as e:
 		logging.warning("Failed to update gw_upstream_rain_pairs.csv with group column: %s", e)
 
-	# 7. Plot coastal stations, study area, and coastline
+	# 7. Plot coastal and inland stations on the same map
 	try:
 		fan_path = os.path.join(data_dir, "Zhuoshui Alluvial Fan", "Zhuoshui Alluvial Fan.shp")
-		gdf_fan = gpd.read_file(fan_path)
-		# Ensure both fan and stations are in a projected CRS before converting to WGS84
-		if gdf_fan.crs is None and coastline.crs is not None:
-			gdf_fan = gdf_fan.set_crs(coastline.crs)
-		elif gdf_fan.crs != coastline.crs:
-			gdf_fan = gdf_fan.to_crs(coastline.crs)
-
 		gdf_stations = gpd.GeoDataFrame(
 			df_result.copy(),
 			geometry=[Point(xy) for xy in zip(df_result["TM_X97"], df_result["TM_Y97"])],
 			crs=coastline.crs,
 		)
+		gdf_wgs84 = gdf_stations.to_crs("EPSG:4326")
+		gdf_coastal = gdf_wgs84[gdf_wgs84["group"] == "coastal"]
+		gdf_inland = gdf_wgs84[gdf_wgs84["group"] == "inland"]
 
-		gdf_coastal = gdf_stations[gdf_stations["group"] == "coastal"]
+		x_coastal = gdf_coastal.geometry.x.tolist()
+		y_coastal = gdf_coastal.geometry.y.tolist()
+		labels_coastal = gdf_coastal["st_id"].tolist()
+		x_inland = gdf_inland.geometry.x.tolist()
+		y_inland = gdf_inland.geometry.y.tolist()
+		labels_inland = gdf_inland["st_id"].tolist()
 
-		# Reproject to WGS84 for plotting in lon/lat
-		gdf_fan_wgs84 = gdf_fan.to_crs("EPSG:4326")
-		gdf_coastal_wgs84 = gdf_coastal.to_crs("EPSG:4326") if not gdf_coastal.empty else gdf_coastal
+		setup_font()
+		# Use StationMapFig with coastal stations as the base map
+		fig_obj = StationMapFig(
+			x_coastal, y_coastal, fan_path,
+			station_color="#c0392b",
+			north_arrow=True,
+			scale_bar=True,
+			scale_km=10,
+			figsize=(8, 8),
+			dpi=300,
+		)
+		fig, ax = fig_obj.plot()
 
-		fig, ax = plt.subplots(figsize=(8, 8))
+		# Overlay inland stations with a distinct marker and color
+		sc_inland = ax.scatter(
+			x_inland, y_inland,
+			c="#2980b9", marker="^", edgecolors="black", s=35, zorder=5,
+		)
 
-		gdf_fan_wgs84.plot(ax=ax, color="lightgrey", edgecolor="black", linewidth=0.5, label="Study area")
+		# Retrieve the coastal scatter collection added by StationMapFig
+		sc_coastal = next(
+			c for c in ax.collections if hasattr(c, 'get_offsets')
+			and len(c.get_offsets()) == len(x_coastal)
+		)
 
-		if not gdf_coastal_wgs84.empty:
-			gdf_coastal_wgs84.plot(ax=ax, color="red", markersize=20, marker="o", label="Coastal stations")
+		# Build all labels for both groups, then adjust to avoid overlap
+		all_x = x_coastal + x_inland
+		all_y = y_coastal + y_inland
+		all_labels = labels_coastal + labels_inland
+		texts = [
+			ax.text(xi, yi, str(lbl), fontsize=9, zorder=7)
+			for xi, yi, lbl in zip(all_x, all_y, all_labels)
+		]
+		adjust_text(
+			texts,
+			x=all_x, y=all_y,
+			ax=ax,
+			add_objects=[sc_coastal, sc_inland],
+			arrowprops=dict(arrowstyle='-', color='gray', lw=0.5),
+			expand=(2.0, 2.5),
+			force_text=(0.8, 1.0),
+			force_points=(1.5, 2.0),
+			force_objects=(1.5, 2.0),
+			min_arrow_len=4,
+		)
 
-		ax.set_xlabel("Longitude")
-		ax.set_ylabel("Latitude")
-		ax.set_title("Coastal groundwater stations (WGS84)")
+		# Legend
+		legend_handles = [
+			Line2D([0], [0], marker='o', color='w', markerfacecolor='#c0392b',
+				   markeredgecolor='black', markersize=8, label='Coastal'),
+			Line2D([0], [0], marker='^', color='w', markerfacecolor='#2980b9',
+				   markeredgecolor='black', markersize=8, label='Inland'),
+		]
+		ax.legend(handles=legend_handles, loc='upper left', fontsize=10)
 
-		handles, labels = ax.get_legend_handles_labels()
-		if handles:
-			ax.legend(loc="best")
+		# Title and axis labels: bold, fontsize 14
+		ax.set_title("Classified Coastal and Inland Stations", fontsize=14, fontweight='bold')
+		ax.set_xlabel("Longitude", fontsize=14, fontweight='bold')
+		ax.set_ylabel("Latitude", fontsize=14, fontweight='bold')
 
-		ax.set_aspect("equal")
-
-		out_map_dir = os.path.join(base_dir, "workspace")
+		out_map_dir = os.path.join(base_dir, "workspace", "maps")
 		os.makedirs(out_map_dir, exist_ok=True)
-		out_map_path = os.path.join(out_map_dir, "coastal_stations_map_wgs84.png")
-		plt.tight_layout()
-		plt.savefig(out_map_path, dpi=300)
+		out_map_path = os.path.join(out_map_dir, "coastal_inland_stations_map_wgs84.tiff")
+		rklib_savefig(fig, out_map_path)
 		plt.close(fig)
-		logging.info("Coastal stations map saved to %s", out_map_path)
+		logging.info("Coastal/inland classification map saved to %s", out_map_path)
 	except Exception as e:
-		logging.warning("Failed to create coastal stations map: %s", e)
+		logging.warning("Failed to create coastal/inland stations map: %s", e)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,9 @@ import jfft
 import matplotlib.pyplot as plt
 import gw_subroutine as sub
 
+sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
+from rklib import TimeSeriesModelFig, setup_font, savefig as rklib_savefig, add_panel_label
+
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 GW_DATA_PATH = DATA_DIR / "gw_data2.csv"
@@ -812,30 +815,77 @@ if __name__ == "__main__":
     station_label = args.get('st_id', args.get('gw_st', 'unknown'))
     plot_index = best_model["time_index"]
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
-    axes[0].plot(plot_index, best_model["h_obs"], label="Observed", color="k", linewidth=1.5)
-    for idx, result in enumerate(model_results):
-        label = f"{result['model']} (RMSE={result['rmse']:.3f}, R^2={result['r2']:.3f})"
-        axes[0].plot(plot_index, result["y_fit"], label=label, linewidth=1.2)
+    setup_font()
+    fig_obj = TimeSeriesModelFig(
+        time=plot_index,
+        observed=best_model["h_obs"],
+        predicted=best_model["y_fit"],
+        extra_panels=[
+            {'data': best_model["rainfall"], 'label': 'Rainfall', 'color': 'C0', 'ylabel': 'Rainfall(mm)'},
+            {'data': best_model["amp"],      'label': 'AMP',      'color': 'C2', 'ylabel': 'AMP (m)'},
+        ],
+        obs_ylabel="Groundwater level (m)",
+        figsize=(10, 8),
+        panel_labels=False,
+    )
+    fig, axes = fig_obj.plot()
+    fig.tight_layout(h_pad=3.0)  # increase to add more vertical space between subplots
 
-    axes[0].set_ylabel("GW level")
-    axes[0].set_title(f"GW {station_label} ({group_name})")
-    axes[0].legend()
+    # Update best-model legend label and overlay other model fits
+    for line in axes[0].get_lines():
+        if line.get_label() == 'Predicted':
+            line.set_label(f"{best_model['model']} (RMSE={best_model['rmse']:.3f}, R²={best_model['r2']:.3f})")
+    for result in model_results:
+        if result is not best_model:
+            axes[0].plot(plot_index, result["y_fit"],
+                         label=f"{result['model']} (RMSE={result['rmse']:.3f}, R²={result['r2']:.3f})",
+                         linewidth=1.0, alpha=0.7)
+    axes[0].set_title(f"{station_label} ({group_name})")
+    axes[2].set_title(f"AMP-{args.get('st_id', '')}")
+    axes[0].legend(fontsize=7)
 
+    # Redraw rainfall as bar chart (TimeSeriesModelFig uses lines for extra panels)
+    axes[1].clear()
     axes[1].bar(plot_index, best_model["rainfall"], width=1.0, color="C0")
-    axes[1].set_ylabel("Rainfall")
+    axes[1].set_ylabel("Rainfall(mm)")
+    axes[1].set_title(args.get('rf_id', ''))
 
-    axes[2].plot(plot_index, best_model["amp"], color="C2", linewidth=1.0)
-    axes[2].set_ylabel("AMP")
-    axes[2].set_xlabel("Date")
+    # Add panel labels last so nothing overwrites them.
+    # Adjust x, y (axes fraction: 0=left/bottom, 1=right/top) to move labels.
+    for ax, lbl in zip(axes, ['a', 'b', 'c']):
+        add_panel_label(ax, lbl, x=0.01, y=1.09)
 
-    fig.tight_layout()
-
-    fig_dir = '../workspace/muli_model'
-    os.makedirs(fig_dir, exist_ok=True)
-    fig_path = os.path.join(fig_dir, f"gw_fit_{station_label}.png")
-    fig.savefig(fig_path, dpi=150)
+    # Save full multi-panel figure
+    full_dir = '../workspace/results/figures/full_subplots'
+    os.makedirs(full_dir, exist_ok=True)
+    rklib_savefig(fig, os.path.join(full_dir, f"gw_fit_{station_label}.png"))
     plt.close(fig)
+
+    # Save GWL-only figure (observed vs predicted, no extra panels)
+    best_z = dict(zip(best_model['param_names'], best_model['params'])).get('z')
+    gw_fit_dir = '../workspace/results/figures/gw_fit'
+    os.makedirs(gw_fit_dir, exist_ok=True)
+    fig_gw, axes_gw = TimeSeriesModelFig(
+        time=plot_index,
+        observed=best_model["h_obs"],
+        predicted=best_model["y_fit"],
+        obs_ylabel="Groundwater level (m)",
+        baseline=best_z,
+        panel_labels=False,
+        figsize=(10, 5),
+    ).plot()
+    for line in axes_gw[0].get_lines():
+        if line.get_label() == 'Predicted':
+            line.set_label(f"{best_model['model']} (RMSE={best_model['rmse']:.3f}, R²={best_model['r2']:.3f})")
+    for result in model_results:
+        if result is not best_model:
+            axes_gw[0].plot(plot_index, result["y_fit"],
+                            label=f"{result['model']} (RMSE={result['rmse']:.3f}, R²={result['r2']:.3f})",
+                            linewidth=1.0, alpha=0.7)
+    axes_gw[0].set_title(f"{station_label} ({group_name})")
+    axes_gw[0].legend(fontsize=7)
+    rklib_savefig(fig_gw, os.path.join(gw_fit_dir, f"gw_fit_{station_label}.png"))
+    plt.close(fig_gw)
 
     # Optionally, save results to workspace
     results = {
@@ -852,8 +902,8 @@ if __name__ == "__main__":
     }
     for name, val in zip(best_model['param_names'], best_model['params']):
         results[name] = float(val)
-    os.makedirs('../workspace', exist_ok=True)
-    out_path = '../workspace/gw_fit_results.csv'
+    os.makedirs('../workspace/results', exist_ok=True)
+    out_path = '../workspace/results/gw_fit_results.csv'
     new_row = pd.DataFrame([results])
 
     if os.path.exists(out_path):
@@ -900,7 +950,7 @@ if __name__ == "__main__":
             'parameters': json.dumps(param_dict, ensure_ascii=False),
         })
 
-    compare_path = '../workspace/gw_fit_model_compare.csv'
+    compare_path = '../workspace/results/gw_fit_model_compare.csv'
     df_compare_new = pd.DataFrame(compare_rows)
     if os.path.exists(compare_path):
         df_compare_prev = pd.read_csv(compare_path)

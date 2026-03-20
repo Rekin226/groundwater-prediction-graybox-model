@@ -1,8 +1,8 @@
 """Plot groundwater station performance maps (good/medium/low) within Zhuoshui Alluvial Fan.
 
-Reads best-model performance from workspace/gw_fit_results.csv, merges station coordinates
+Reads best-model performance from workspace/results/gw_fit_results.csv, merges station coordinates
 from data/gray_box_input.csv (TWD97), clips to the fan boundary shapefile, and writes three
-figures (good/medium/low) to workspace/figures/.
+figures (good/medium/low) to workspace/results/figures/.
 
 Thresholds follow project convention (R² in 0–1 scale):
 - good:   r2 >= 0.7
@@ -13,19 +13,23 @@ Usage:
   python srcs/plot_performance_maps.py
 
 Optional args:
-  python srcs/plot_performance_maps.py --results workspace/gw_fit_results.csv \
+  python srcs/plot_performance_maps.py --results workspace/results/gw_fit_results.csv \
       --input data/gray_box_input.csv --boundary "data/Zhuoshui Alluvial Fan/Zhuoshui Alluvial Fan.shp" \
-      --outdir workspace/figures
+      --outdir workspace/results/figures
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import pandas as pd
+
+sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
+from rklib import NorthArrow, ScaleBar, setup_font, savefig as rklib_savefig
 
 
 TWD97_CRS = "+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs"
@@ -143,46 +147,49 @@ def _plot_group(
     label_dx: float,
     label_dy: float,
 ) -> None:
+    # Reproject to WGS84 for rklib decorations (ScaleBar needs lon/lat)
+    boundary_wgs84 = boundary.to_crs("EPSG:4326")
+    points_wgs84 = points.to_crs("EPSG:4326") if not points.empty else points
+
     fig, ax = plt.subplots(figsize=(7.5, 7.5), dpi=200)
 
-    boundary.plot(ax=ax, facecolor="none", edgecolor="black", linewidth=1.0)
-    if not points.empty:
-        points.plot(
-            ax=ax,
-            color=color,
-            markersize=18,
-            alpha=0.85,
-            linewidth=0,
-        )
+    boundary_wgs84.plot(ax=ax, facecolor="none", edgecolor="black", linewidth=1.0)
+    if not points_wgs84.empty:
+        points_wgs84.plot(ax=ax, color=color, markersize=18, alpha=0.85, linewidth=0)
         if add_labels:
+            # Convert TWD97-metre offsets to approximate WGS84 degrees
             _annotate_points(
                 ax,
-                points,
+                points_wgs84,
                 label_col=label_col,
                 font_size=label_font_size,
-                dx=label_dx,
-                dy=label_dy,
+                dx=label_dx / 111_000,
+                dy=label_dy / 111_000,
             )
 
     ax.set_title(title)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
     ax.set_aspect("equal", adjustable="box")
-    ax.axis("off")
+    ax.grid(True, alpha=0.25, linestyle='--')
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, bbox_inches="tight")
+    NorthArrow(ax, location="lower right").draw()
+    ScaleBar(ax, location="lower center", length_km=5).draw()
+
+    rklib_savefig(fig, out_path)
     plt.close(fig)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot station performance maps (good/medium/low) within Zhuoshui Alluvial Fan")
-    parser.add_argument("--results", type=Path, default=Path("workspace/gw_fit_results.csv"))
+    parser.add_argument("--results", type=Path, default=Path("workspace/results/gw_fit_results.csv"))
     parser.add_argument("--input", type=Path, default=Path("data/gray_box_input.csv"))
     parser.add_argument(
         "--boundary",
         type=Path,
         default=Path("data/Zhuoshui Alluvial Fan/Zhuoshui Alluvial Fan.shp"),
     )
-    parser.add_argument("--outdir", type=Path, default=Path("workspace/figures"))
+    parser.add_argument("--outdir", type=Path, default=Path("workspace/results/figures"))
     parser.add_argument("--r2-medium", type=float, default=0.5, help="Medium/low threshold (default: 0.5)")
     parser.add_argument("--r2-good", type=float, default=0.7, help="Good/medium threshold (default: 0.7)")
     parser.add_argument("--no-clip", action="store_true", help="Do not clip points to the boundary")
@@ -193,7 +200,7 @@ def main() -> int:
         help="Which column to label points with (default: gw_st). Common alternatives: st_id",
     )
     parser.add_argument("--no-label", action="store_true", help="Disable point labels")
-    parser.add_argument("--label-font-size", type=int, default=6)
+    parser.add_argument("--label-font-size", type=int, default=8)
     parser.add_argument(
         "--label-dx",
         type=float,
@@ -209,6 +216,7 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    setup_font()
     results_df = _read_results(args.results)
     xy_df = _read_station_xy(args.input)
     boundary = _load_boundary(args.boundary)
@@ -233,7 +241,7 @@ def main() -> int:
         points=good,
         title=f"Good performance (R² ≥ {r2_good:.2f}) — n={len(good)}",
         color="#2ca25f",
-        out_path=args.outdir / "performance_good.png",
+        out_path=args.outdir / "performance_good.tiff",
         label_col=args.label_col,
         add_labels=add_labels,
         label_font_size=args.label_font_size,
@@ -245,7 +253,7 @@ def main() -> int:
         points=medium,
         title=f"Medium performance ({r2_med:.2f} ≤ R² < {r2_good:.2f}) — n={len(medium)}",
         color="#ff7f00",
-        out_path=args.outdir / "performance_medium.png",
+        out_path=args.outdir / "performance_medium.tiff",
         label_col=args.label_col,
         add_labels=add_labels,
         label_font_size=args.label_font_size,
@@ -257,7 +265,7 @@ def main() -> int:
         points=low,
         title=f"Low performance (R² < {r2_med:.2f}) — n={len(low)}",
         color="#de2d26",
-        out_path=args.outdir / "performance_low.png",
+        out_path=args.outdir / "performance_low.tiff",
         label_col=args.label_col,
         add_labels=add_labels,
         label_font_size=args.label_font_size,
@@ -266,9 +274,9 @@ def main() -> int:
     )
 
     print("Wrote:")
-    print(f"  {args.outdir / 'performance_good.png'}")
-    print(f"  {args.outdir / 'performance_medium.png'}")
-    print(f"  {args.outdir / 'performance_low.png'}")
+    print(f"  {args.outdir / 'performance_good.tiff'}")
+    print(f"  {args.outdir / 'performance_medium.tiff'}")
+    print(f"  {args.outdir / 'performance_low.tiff'}")
     return 0
 
 

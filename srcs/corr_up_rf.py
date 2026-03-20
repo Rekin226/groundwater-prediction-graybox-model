@@ -6,11 +6,15 @@ from scipy.signal import butter, filtfilt
 from numpy.fft import fft, fftfreq
 from tqdm import tqdm
 import os
+import sys
 import matplotlib.pyplot as plt
 import geopandas as gpd
 from shapely.geometry import Point
 from pyproj import CRS, Transformer
 from matplotlib.animation import FuncAnimation, PillowWriter
+
+sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
+from rklib import StationMapFig, NorthArrow, ScaleBar, setup_font, savefig as rklib_savefig
 
 TWD97_CRS = CRS.from_string("+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs")
 BOUNDARY_SHP = "../data/Zhuoshui Alluvial Fan/Zhuoshui Alluvial Fan.shp"
@@ -513,28 +517,27 @@ def plot_coastal_stations(df_class, coastline):
         elif gdf_fan.crs != coastline.crs:
             gdf_fan = gdf_fan.to_crs(coastline.crs)
 
-        gdf_fan_wgs84 = gdf_fan.to_crs("EPSG:4326")
         gdf_coastal_wgs84 = gdf_coastal.to_crs("EPSG:4326") if not gdf_coastal.empty else gdf_coastal
+        x = gdf_coastal_wgs84.geometry.x.tolist()
+        y = gdf_coastal_wgs84.geometry.y.tolist()
 
-        fig, ax = plt.subplots(figsize=(8, 8))
-        gdf_fan_wgs84.plot(ax=ax, color="lightgrey", edgecolor="black", linewidth=0.5, label="Study area")
-
-        if not gdf_coastal_wgs84.empty:
-            gdf_coastal_wgs84.plot(ax=ax, color="red", markersize=20, marker="o", label="Coastal stations")
-
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
+        setup_font()
+        fig_obj = StationMapFig(
+            x, y, fan_path,
+            station_color="#c0392b",
+            north_arrow=True,
+            scale_bar=True,
+            scale_km=5,
+            figsize=(8, 8),
+            dpi=300,
+        )
+        fig, ax = fig_obj.plot()
         ax.set_title("Coastal groundwater stations (WGS84)")
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            ax.legend(loc="best")
-        ax.set_aspect("equal")
 
-        out_map_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
+        out_map_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace", "maps"))
         os.makedirs(out_map_dir, exist_ok=True)
-        out_map_path = os.path.join(out_map_dir, "coastal_stations_map_wgs84.png")
-        plt.tight_layout()
-        plt.savefig(out_map_path, dpi=300)
+        out_map_path = os.path.join(out_map_dir, "coastal_stations_map_wgs84.tiff")
+        rklib_savefig(fig, out_map_path)
         plt.close(fig)
         print(f"Coastal stations map saved to {out_map_path}")
     except Exception as exc:
@@ -671,7 +674,7 @@ def generate_visualization(df_input, df_gw_station, df_rain_station, shp_path=BO
         return
 
     try:
-        plt.rcParams["font.family"] = "Times New Roman"
+        setup_font()
         fig, ax = plt.subplots(figsize=(8, 10))
 
         transformer = Transformer.from_crs(TWD97_CRS, CRS.from_epsg(4326), always_xy=True)
@@ -688,22 +691,13 @@ def generate_visualization(df_input, df_gw_station, df_rain_station, shp_path=BO
         if boundary is not None:
             boundary.plot(ax=ax, edgecolor='black', facecolor='none')
 
-        ax.grid(True)
-
-        gw_id_lookup = dict(zip(df_gw_station['Station'].astype(str), df_gw_station['st_id']))
+        ax.grid(True, linestyle='--', alpha=0.4)
 
         for _, station in df_gw_station.iterrows():
             lon, lat = transformer.transform(station['TM_X97'], station['TM_Y97'])
             ax.scatter(lon, lat, color='blue', s=10)
-            gw_str_id = station['st_id']
-            ax.annotate(gw_str_id, (lon, lat), fontsize=6, xytext=(2, 2), textcoords='offset points')
-
-        if df_rain_station is not None:
-            for _, rf_station in df_rain_station.iterrows():
-                rf_lon, rf_lat = transformer.transform(rf_station['TM_X97'], rf_station['TM_Y97'])
-                rf_id = str(rf_station['rf_id']) if 'rf_id' in rf_station else ''
-                ax.scatter(rf_lon, rf_lat, color='green', s=10)
-                ax.annotate(rf_id, (rf_lon, rf_lat), fontsize=6, xytext=(2, 2), textcoords='offset points')
+            ax.annotate(station['st_id'], (lon, lat), fontsize=12,
+                        xytext=(4, 4), textcoords='offset points', ha='left')
 
         # Draw upstream links using station coordinates from df_gw_station
         gw_coord_lookup = {
@@ -727,21 +721,184 @@ def generate_visualization(df_input, df_gw_station, df_rain_station, shp_path=BO
             lon2, lat2 = transformer.transform(x2, y2)
             ax.plot([lon1, lon2], [lat1, lat2], color='red', linewidth=0.8)
 
-        blue_dot = plt.Line2D([], [], marker='o', color='blue', markersize=5, label='GW Station', linestyle='none')
-        green_dot = plt.Line2D([], [], marker='o', color='green', markersize=5, label='RF Station', linestyle='none')
-        red_line = plt.Line2D([], [], color='red', linewidth=1, label='Upstream Link')
-        handles = [blue_dot, green_dot, red_line]
+        blue_dot = plt.Line2D([], [], marker='o', color='blue', markersize=5, label='Observation Wells', linestyle='none')
+        red_line = plt.Line2D([], [], color='red', linewidth=1, label='Upstream Links')
+        handles = [blue_dot, red_line]
         if boundary is not None:
-            black_line = plt.Line2D([], [], color='black', linewidth=1, label='Boundary')
+            black_line = plt.Line2D([], [], color='black', linewidth=1, label='Study Area Boundary')
             handles.append(black_line)
         ax.legend(handles=handles, loc='upper left')
         ax.set_title("Mapping Upstream Relations")
 
-        map_out = '../workspace/final_map_V3.png'
-        plt.savefig(map_out, dpi=300, bbox_inches='tight')
+        NorthArrow(ax, location='lower right').draw()
+        ScaleBar(ax, location='lower center', length_km=10).draw()
+
+        map_out = '../workspace/maps/final_map_V3.tiff'
+        rklib_savefig(fig, map_out)
         print(f"Final map saved to {map_out}")
     except Exception as exc:
         print(f"Error during visualization: {exc}")
+        import traceback
+        traceback.print_exc()
+
+
+def plot_station_map(df_gw_station, df_rain_station, shp_path=BOUNDARY_SHP):
+    """Plot a clean map showing groundwater observation wells and rainfall stations."""
+    print("Generating station map (GW + rainfall)...")
+    try:
+        setup_font()
+        fig, ax = plt.subplots(figsize=(8, 10))
+
+        transformer = Transformer.from_crs(TWD97_CRS, CRS.from_epsg(4326), always_xy=True)
+
+        if os.path.exists(shp_path):
+            boundary = gpd.read_file(shp_path).to_crs('EPSG:4326')
+        else:
+            print(f"Shapefile not found at {shp_path}. Skipping map background.")
+            boundary = None
+
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude')
+
+        if boundary is not None:
+            boundary.plot(ax=ax, edgecolor='black', facecolor='none')
+
+        ax.grid(True, linestyle='--', alpha=0.4)
+
+        texts = []
+        point_xs, point_ys = [], []
+
+        for _, station in df_gw_station.iterrows():
+            lon, lat = transformer.transform(station['TM_X97'], station['TM_Y97'])
+            ax.scatter(lon, lat, color='blue', s=18, zorder=5)
+            texts.append(ax.text(lon, lat, station['st_id'], fontsize=8, color='blue'))
+            point_xs.append(lon)
+            point_ys.append(lat)
+
+        if df_rain_station is not None:
+            for _, rf_station in df_rain_station.iterrows():
+                rf_lon, rf_lat = transformer.transform(rf_station['TM_X97'], rf_station['TM_Y97'])
+                rf_id = str(rf_station['rf_id']) if 'rf_id' in rf_station else ''
+                ax.scatter(rf_lon, rf_lat, color='green', marker='^', s=22, zorder=5)
+                texts.append(ax.text(rf_lon, rf_lat, rf_id, fontsize=8, color='green'))
+                point_xs.append(rf_lon)
+                point_ys.append(rf_lat)
+
+        try:
+            from adjustText import adjust_text
+            adjust_text(texts, x=point_xs, y=point_ys, ax=ax,
+                        arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+        except ImportError:
+            print("adjustText not installed — labels may overlap. Run: pip install adjustText")
+
+        blue_dot = plt.Line2D([], [], marker='o', color='blue', markersize=5, label='Observation Wells', linestyle='none')
+        green_tri = plt.Line2D([], [], marker='^', color='green', markersize=5, label='Rainfall Stations', linestyle='none')
+        handles = [blue_dot, green_tri]
+        if boundary is not None:
+            handles.append(plt.Line2D([], [], color='black', linewidth=1, label='Study Area Boundary'))
+        ax.legend(handles=handles, loc='upper left')
+        ax.set_title("Groundwater & Rainfall Stations")
+
+        NorthArrow(ax, location='lower right').draw()
+        ScaleBar(ax, location='lower center', length_km=10).draw()
+
+        map_out = '../workspace/maps/station_map.tiff'
+        rklib_savefig(fig, map_out)
+        print(f"Station map saved to {map_out}")
+    except Exception as exc:
+        print(f"Error during station map: {exc}")
+        import traceback
+        traceback.print_exc()
+
+
+def plot_station_map_subplots(df_gw_station, df_rain_station, shp_path=BOUNDARY_SHP):
+    """Two-panel subplot map: (a) groundwater stations, (b) rainfall stations."""
+    print("Generating subplot station map...")
+    try:
+        from adjustText import adjust_text
+        has_adjust_text = True
+    except ImportError:
+        has_adjust_text = False
+        print("adjustText not installed — labels may overlap. Run: pip install adjustText")
+
+    try:
+        setup_font()
+        fig, axes = plt.subplots(1, 2, figsize=(16, 10))
+
+        transformer = Transformer.from_crs(TWD97_CRS, CRS.from_epsg(4326), always_xy=True)
+
+        if os.path.exists(shp_path):
+            boundary = gpd.read_file(shp_path).to_crs('EPSG:4326')
+        else:
+            print(f"Shapefile not found at {shp_path}. Skipping map background.")
+            boundary = None
+
+        # --- (a) Groundwater stations ---
+        ax_gw = axes[0]
+        if boundary is not None:
+            boundary.plot(ax=ax_gw, edgecolor='black', facecolor='none')
+        ax_gw.grid(True, linestyle='--', alpha=0.4)
+        ax_gw.set_xlabel('Longitude', fontsize=13, fontweight='bold')
+        ax_gw.set_ylabel('Latitude', fontsize=13, fontweight='bold')
+        ax_gw.set_title('Groundwater Stations', fontsize=14, fontweight='bold')
+        ax_gw.text(0.02, 0.98, '(a)', transform=ax_gw.transAxes,
+                   fontsize=13, fontweight='bold', va='top', ha='left')
+
+        gw_texts, gw_xs, gw_ys = [], [], []
+        for _, station in df_gw_station.iterrows():
+            lon, lat = transformer.transform(station['TM_X97'], station['TM_Y97'])
+            ax_gw.scatter(lon, lat, color='blue', s=18, zorder=5)
+            gw_texts.append(ax_gw.text(lon, lat, station['st_id'], fontsize=12, color='blue'))
+            gw_xs.append(lon)
+            gw_ys.append(lat)
+
+        if has_adjust_text:
+            adjust_text(gw_texts, x=gw_xs, y=gw_ys, ax=ax_gw,
+                        arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+
+        ax_gw.legend(handles=[plt.Line2D([], [], marker='o', color='blue', markersize=5,
+                                          label='Observation Wells', linestyle='none')],
+                     loc='upper right')
+        NorthArrow(ax_gw, location='lower right').draw()
+        ScaleBar(ax_gw, location='lower center', length_km=10).draw()
+
+        # --- (b) Rainfall stations ---
+        ax_rf = axes[1]
+        if boundary is not None:
+            boundary.plot(ax=ax_rf, edgecolor='black', facecolor='none')
+        ax_rf.grid(True, linestyle='--', alpha=0.4)
+        ax_rf.set_xlabel('Longitude', fontsize=13, fontweight='bold')
+        ax_rf.set_ylabel('Latitude', fontsize=13, fontweight='bold')
+        ax_rf.set_title('Rainfall Stations', fontsize=14, fontweight='bold')
+        ax_rf.text(0.02, 0.98, '(b)', transform=ax_rf.transAxes,
+                   fontsize=13, fontweight='bold', va='top', ha='left')
+
+        if df_rain_station is not None:
+            rf_texts, rf_xs, rf_ys = [], [], []
+            for _, rf_station in df_rain_station.iterrows():
+                rf_lon, rf_lat = transformer.transform(rf_station['TM_X97'], rf_station['TM_Y97'])
+                rf_id = str(rf_station['rf_id']) if 'rf_id' in rf_station else ''
+                ax_rf.scatter(rf_lon, rf_lat, color='green', marker='^', s=22, zorder=5)
+                rf_texts.append(ax_rf.text(rf_lon, rf_lat, rf_id, fontsize=12, color='green'))
+                rf_xs.append(rf_lon)
+                rf_ys.append(rf_lat)
+
+            if has_adjust_text:
+                adjust_text(rf_texts, x=rf_xs, y=rf_ys, ax=ax_rf,
+                            arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
+
+        ax_rf.legend(handles=[plt.Line2D([], [], marker='^', color='green', markersize=5,
+                                          label='Rainfall Stations', linestyle='none')],
+                     loc='upper right')
+        NorthArrow(ax_rf, location='lower right').draw()
+        ScaleBar(ax_rf, location='lower center', length_km=10).draw()
+
+        fig.tight_layout()
+        map_out = '../workspace/maps/station_map_subplots.tiff'
+        rklib_savefig(fig, map_out)
+        print(f"Subplot station map saved to {map_out}")
+    except Exception as exc:
+        print(f"Error during subplot station map: {exc}")
         import traceback
         traceback.print_exc()
 
@@ -769,7 +926,7 @@ def animate_upstream_links(
         return
 
     try:
-        plt.rcParams["font.family"] = "Times New Roman"
+        setup_font()
         fig, ax = plt.subplots(figsize=(8, 10))
         transformer = Transformer.from_crs(TWD97_CRS, CRS.from_epsg(4326), always_xy=True)
 
@@ -824,12 +981,12 @@ def animate_upstream_links(
             plt.close(fig)
             return
 
-        blue_dot = plt.Line2D([], [], marker='o', color='blue', markersize=5, label='GW Station', linestyle='none')
-        green_dot = plt.Line2D([], [], marker='o', color='green', markersize=5, label='RF Station', linestyle='none')
-        red_line = plt.Line2D([], [], color='red', linewidth=1, label='Upstream Link')
+        blue_dot = plt.Line2D([], [], marker='o', color='blue', markersize=5, label='Observation Wells', linestyle='none')
+        green_dot = plt.Line2D([], [], marker='o', color='green', markersize=5, label='Rainfall Stations', linestyle='none')
+        red_line = plt.Line2D([], [], color='red', linewidth=1, label='Upstream Links')
         handles = [blue_dot, green_dot, red_line]
         if boundary is not None:
-            black_line = plt.Line2D([], [], color='black', linewidth=1, label='Boundary')
+            black_line = plt.Line2D([], [], color='black', linewidth=1, label='Study Area Boundary')
             handles.append(black_line)
         ax.legend(handles=handles, loc='upper left')
         ax.set_title("Mapping Upstream Relations (Animated)")
@@ -921,9 +1078,9 @@ def main():
     # add a column active == 0 for all rows in df_input as last column
     df_input['active'] = 0
 
-    output_path = '../data/gray_box_input.csv'
-    df_input.to_csv(output_path, index=False, encoding='utf-8')
-    print(f"Results saved to {output_path}")
+    #output_path = '../data/gray_box_input.csv'
+    #df_input.to_csv(output_path, index=False, encoding='utf-8')
+    #print(f"Results saved to {output_path}")
 
     print("\nSummary of Correlations:")
     print(df_input['correlation'].value_counts())
@@ -932,6 +1089,8 @@ def main():
     print(df_input)
 
     generate_visualization(df_input, df_gw_station, df_rain_station)
+    plot_station_map(df_gw_station, df_rain_station)
+    plot_station_map_subplots(df_gw_station, df_rain_station)
     animate_upstream_links(df_input, df_gw_station, df_rain_station)
 
 

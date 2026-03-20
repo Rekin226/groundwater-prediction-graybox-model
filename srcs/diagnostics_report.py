@@ -171,7 +171,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate diagnostics report for low-R² stations.")
     parser.add_argument(
         "--fit-results",
-        default="../workspace/gw_fit_results.csv",
+        default="../workspace/results/gw_fit_results.csv",
         help="Path to gw_fit_results.csv",
     )
     parser.add_argument(
@@ -199,7 +199,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--output",
-        default="../workspace/diagnostics_report_r2_below_0p5.csv",
+        default="../workspace/diagnostics/diagnostics_report_r2_below_0p5.csv",
         help="Output CSV path",
     )
 
