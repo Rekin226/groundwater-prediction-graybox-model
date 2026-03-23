@@ -18,12 +18,12 @@ from rklib import StationMapFig, NorthArrow, ScaleBar, setup_font, savefig as rk
 
 TWD97_CRS = CRS.from_string("+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs")
 BOUNDARY_SHP = "../data/Zhuoshui Alluvial Fan/Zhuoshui Alluvial Fan.shp"
-GW_META_IN = "../data/input_gw_st.csv"
-GW_DATA_IN = "../data/gw_data.csv"
-GW_META_OUT = "../data/gw_meta2.csv"
-GW_DATA_OUT = "../data/gw_data2.csv"
-RF_META_IN = "../data/rf_meta.csv"
-RF_DATA_IN = "../data/rf_data.csv"
+GW_META_IN = "../data/raw/gw_stations_prefilter.csv"
+GW_DATA_IN = "../data/raw/gw_timeseries_raw.csv"
+GW_META_OUT = "../data/gw_stations.csv"
+GW_DATA_OUT = "../data/gw_timeseries.csv"
+RF_META_IN = "../data/rf_stations.csv"
+RF_DATA_IN = "../data/rf_timeseries.csv"
 
 # Coastal / inland classification parameters
 CUTOFF_CPD = 0.5
@@ -485,7 +485,7 @@ def classify_coastal_inland(df_gw_station, df_gw_data):
     mask_coastal = df_result['is_near_coast'] & df_result['is_m2_like']
     df_result.loc[mask_coastal, 'group'] = 'coastal'
 
-    out_path = os.path.join(data_dir, 'gw_coastal_inland_class.csv')
+    out_path = os.path.join(data_dir, 'intermediate', 'gw_coastal_inland_class.csv')
     df_result.to_csv(out_path, index=False)
     print(f"Coastal/inland classification saved to {out_path}")
 
@@ -1062,25 +1062,12 @@ def main():
     else:
         df_input = df_input.sort_values(by=['correlation'], ascending=True)
 
-    # Reassign station IDs so strongest stations become st1, st2, ... in the sorted order
-    if 'st_id' in df_input.columns:
-        ordered_ids = df_input['st_id'].tolist()
-        new_ids = [f"st{i+1}" for i in range(len(ordered_ids))]
-        id_map = {old: new for old, new in zip(ordered_ids, new_ids)}
-
-        df_input['st_id'] = df_input['st_id'].map(id_map)
-        if 'ups_id' in df_input.columns:
-            df_input['ups_id'] = df_input['ups_id'].map(lambda x: id_map.get(x, x))
-
-        if df_gw_station is not None and 'st_id' in df_gw_station.columns:
-            df_gw_station['st_id'] = df_gw_station['st_id'].map(lambda x: id_map.get(x, x))
-
     # add a column active == 0 for all rows in df_input as last column
     df_input['active'] = 0
 
-    #output_path = '../data/gray_box_input.csv'
-    #df_input.to_csv(output_path, index=False, encoding='utf-8')
-    #print(f"Results saved to {output_path}")
+    output_path = '../data/gray_box_input.csv'
+    df_input.to_csv(output_path, index=False, encoding='utf-8')
+    print(f"Results saved to {output_path}")
 
     print("\nSummary of Correlations:")
     print(df_input['correlation'].value_counts())

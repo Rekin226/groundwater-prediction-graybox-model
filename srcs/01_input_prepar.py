@@ -102,9 +102,8 @@ else:
 
 print(df_input)
 
-# save df_input to csv as input_gw_st.csv
-df_input.to_csv("data/input_gw_st.csv", index=False)
-#print('df_input saved to data/input_gw_st.csv')
+# save df_input to csv
+df_input.to_csv("data/raw/gw_stations_prefilter.csv", index=False)
 
 
 # print the list csv file in ../data/rf_clean folder
@@ -150,8 +149,8 @@ for file in sorted(rf_files):
 df_rf_st.columns = [col.replace('_rf', '') for col in df_rf_st.columns]
  # Rename the index to 'date time'
 df_rf_st.index.name = 'date time'
-# save df_rf_st to csv as rf_data.csv
-#df_rf_st.to_csv("data/rf_data.csv")
+# save df_rf_st to csv as rf_timeseries.csv (in raw/ as it requires manual curation before use)
+#df_rf_st.to_csv("data/raw/rf_timeseries_raw.csv")
 
 # read the rainfall-station-up2date.csv
 df_rf_meta = pd.read_csv('../data/GIS/rainfall-station-up2date.csv')
@@ -162,9 +161,8 @@ df_rf_meta.rename(columns={'rf_st': 'rf_id'}, inplace=True)
 
 print(df_rf_meta)
 
-# save df_rf_meta to csv as input_rf_st.csv
-df_rf_meta.to_csv("data/input_rf_st.csv", index=False)
-#print('df_rf_meta saved to data/input_rf_st.csv')
+# save df_rf_meta to csv
+df_rf_meta.to_csv("data/raw/rf_stations_prefilter.csv", index=False)
 
 
 

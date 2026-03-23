@@ -16,8 +16,8 @@ from rklib import TimeSeriesModelFig, setup_font, savefig as rklib_savefig, add_
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-GW_DATA_PATH = DATA_DIR / "gw_data2.csv"
-RF_DATA_PATH = DATA_DIR / "rf_data.csv"
+GW_DATA_PATH = DATA_DIR / "gw_timeseries.csv"
+RF_DATA_PATH = DATA_DIR / "rf_timeseries.csv"
 
 
 def argv_phrase(argv: List):
@@ -74,7 +74,7 @@ def prepare_data(args_params):
     df_gw_hourly = df_gw_hourly.rename(columns=str)
     df_gw_hourly = df_gw_hourly.set_index('date time')
     if not isinstance(df_gw_hourly.index, pd.DatetimeIndex):
-        raise ValueError("gw_data2.csv must have a datetime index")
+        raise ValueError("gw_timeseries.csv must have a datetime index")
 
     df_gw_daily = df_gw_hourly.resample('D').mean()
 
@@ -99,7 +99,7 @@ def prepare_data(args_params):
     df_rf_daily = df_rf_daily.rename(columns=str)
     df_rf_daily = df_rf_daily.set_index('date time')
     if rf_id not in df_rf_daily.columns:
-        raise KeyError(f"Rainfall id {rf_id} not found in rf_data.csv")
+        raise KeyError(f"Rainfall id {rf_id} not found in rf_timeseries.csv")
     df_rf = df_rf_daily[[rf_id]].rename(columns={rf_id: 'rf'})
 
     if st_id not in df_gw_hourly.columns:
