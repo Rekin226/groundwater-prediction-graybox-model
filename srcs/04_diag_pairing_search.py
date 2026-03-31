@@ -1,8 +1,10 @@
 import argparse
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -20,6 +22,8 @@ class FitOutcome:
     r2: float
     rain_lag_days: int
     up_lag_days: int
+    r2_val: float = float("nan")
+    rmse_val: float = float("nan")
 
 
 def _corr_abs(x: np.ndarray, y: np.ndarray) -> float:
@@ -169,7 +173,7 @@ def fit_combo(
     if not results:
         raise RuntimeError("No successful fit for any model")
 
-    best = min(results, key=lambda item: item["rmse"])
+    best = min(results, key=lambda item: item["aic"])
     return FitOutcome(
         st_id=st_id,
         rf_id=str(rf_id),
@@ -180,6 +184,8 @@ def fit_combo(
         r2=float(best["r2"]),
         rain_lag_days=int(rain_lag),
         up_lag_days=int(up_lag),
+        r2_val=float(best.get("r2_val", float("nan"))),
+        rmse_val=float(best.get("rmse_val", float("nan"))),
     )
 
 
@@ -213,10 +219,14 @@ def rank_ups_candidates(
     max_lag: int,
     top_k: int,
     include: Optional[str] = None,
+    candidates: Optional[list] = None,
 ) -> list[str]:
+    # If a pre-filtered geographic candidate list is provided, restrict scoring to it.
+    # This avoids scanning every station and keeps upstream candidates physically plausible.
+    cols_to_score = candidates if candidates is not None else list(gw_daily.columns)
     scores = []
-    for col in gw_daily.columns:
-        if col == st_id or col == "date time":
+    for col in cols_to_score:
+        if col == st_id or col == "date time" or col not in gw_daily.columns:
             continue
         h_up = gw_daily[col].values
         _, sc = best_abs_corr_upstream(h_obs, h_up, max_lag=max_lag)
@@ -234,18 +244,138 @@ def rank_ups_candidates(
     return selected
 
 
+def _select_metric(outcome: FitOutcome) -> float:
+    """Return the metric to maximise during search. Prefer r2_val when valid."""
+    if np.isfinite(outcome.r2_val):
+        return outcome.r2_val
+    return outcome.r2
+
+
+def _apply_improvements(
+    input_csv: Path,
+    summary_rows: list,
+    out_csv: Path,
+    min_delta_r2: float = 0.02,
+) -> pd.DataFrame:
+    """Write gray_box_input_optimized.csv with improved pairings applied for qualifying stations."""
+    df = pd.read_csv(input_csv)
+    df["st_id"] = df["st_id"].astype(str)
+
+    applied = 0
+    for row in summary_rows:
+        # Prefer delta_r2_val (validation improvement) as the gate; fall back to delta_r2.
+        delta_val = row.get("delta_r2_val")
+        delta_train = row.get("delta_r2")
+        if delta_val is not None and np.isfinite(float(delta_val)):
+            delta = float(delta_val)
+        elif delta_train is not None and np.isfinite(float(delta_train)):
+            delta = float(delta_train)
+        else:
+            continue
+        if delta < min_delta_r2:
+            continue
+        mask = df["st_id"] == str(row["st_id"])
+        if not mask.any():
+            continue
+        df.loc[mask, "rf_id"] = row["best_rf"]
+        df.loc[mask, "ups_id"] = row["best_ups"]
+        rain_lag = row.get("best_rain_lag_days")
+        if rain_lag is not None and np.isfinite(float(rain_lag)):
+            df.loc[mask, "lag_days"] = int(float(rain_lag))
+        applied += 1
+
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_csv, index=False)
+    print(f"Applied {applied} pairing improvement(s) → {out_csv}")
+    return df
+
+
+def _plot_upstream_map(df_links: pd.DataFrame, title: str, out_path: Path, shp_path: str) -> None:
+    """Draw upstream link arrows on a map from a gray_box_input-style DataFrame."""
+    try:
+        import geopandas as gpd
+        from pyproj import CRS, Transformer
+
+        TWD97_CRS = CRS.from_string(
+            "+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs"
+        )
+        transformer = Transformer.from_crs(TWD97_CRS, CRS.from_epsg(4326), always_xy=True)
+
+        fig, ax = plt.subplots(figsize=(8, 10))
+
+        if os.path.exists(shp_path):
+            boundary = gpd.read_file(shp_path).to_crs("EPSG:4326")
+            boundary.plot(ax=ax, edgecolor="black", facecolor="none")
+
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+        ax.set_title(title)
+
+        coord_lookup = {
+            str(r["st_id"]): (float(r["gw_TM_X97"]), float(r["gw_TM_Y97"]))
+            for _, r in df_links.iterrows()
+        }
+
+        for _, row in df_links.iterrows():
+            lon, lat = transformer.transform(row["gw_TM_X97"], row["gw_TM_Y97"])
+            ax.scatter(lon, lat, color="blue", s=10, zorder=5)
+            ax.annotate(str(row["st_id"]), (lon, lat), fontsize=6,
+                        xytext=(2, 2), textcoords="offset points")
+
+        for _, row in df_links.iterrows():
+            gw_id = str(row["st_id"])
+            ups_id = str(row.get("ups_id", "none"))
+            if ups_id in ("none", "nan", "") or ups_id not in coord_lookup:
+                continue
+            x1, y1 = coord_lookup[gw_id]
+            x2, y2 = coord_lookup[ups_id]
+            lon1, lat1 = transformer.transform(x1, y1)
+            lon2, lat2 = transformer.transform(x2, y2)
+            ax.annotate(
+                "",
+                xy=(lon1, lat1),
+                xytext=(lon2, lat2),
+                arrowprops=dict(arrowstyle="->", color="red", lw=0.8),
+            )
+
+        blue_dot = plt.Line2D([], [], marker="o", color="blue", markersize=5,
+                              label="Observation Wells", linestyle="none")
+        red_arr = plt.Line2D([], [], color="red", linewidth=1, label="Upstream Links")
+        ax.legend(handles=[blue_dot, red_arr], loc="upper left")
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Upstream map saved → {out_path}")
+    except Exception as exc:
+        print(f"Failed to draw upstream map: {exc}")
+        import traceback
+        traceback.print_exc()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Search alternative rf_id/ups_id pairings for low-R² stations.")
-    parser.add_argument("--fit-results", default="workspace/results/gw_fit_results.csv")
+    parser.add_argument(
+        "--run-id",
+        default="initial",
+        help="Run tag matching the one used in 03_run_model.py. Sets default --fit-results path.",
+    )
+    parser.add_argument("--fit-results", default=None,
+                        help="Path to gw_fit_results.csv. Defaults to workspace/results/{run-id}/gw_fit_results.csv.")
     parser.add_argument("--gray-box-input", default="data/gray_box_input.csv")
     parser.add_argument("--r2-threshold", type=float, default=0.5)
     parser.add_argument("--max-lag", type=int, default=45)
-    parser.add_argument("--top-k-rf", type=int, default=3)
-    parser.add_argument("--top-k-ups", type=int, default=3)
-    parser.add_argument("--n-starts", type=int, default=4)
+    parser.add_argument("--top-k-rf", type=int, default=2)
+    parser.add_argument("--top-k-ups", type=int, default=2)
+    parser.add_argument("--n-starts", type=int, default=2)
     parser.add_argument("--passes", type=int, default=2, help="Coordinate-descent passes (rf then ups).")
     parser.add_argument("--output-summary", default="workspace/diagnostics/pairing_search_summary.csv")
     parser.add_argument("--output-trials", default="workspace/diagnostics/pairing_search_trials.csv")
+    parser.add_argument("--output-optimized", default="data/gray_box_input_optimized.csv",
+                        help="Path to write improved gray_box_input with optimized pairings applied.")
+    parser.add_argument("--min-improvement", type=float, default=0.02,
+                        help="Minimum delta_r2 required to apply a new pairing to the optimized CSV.")
 
     args = parser.parse_args()
 
@@ -255,7 +385,9 @@ def main() -> int:
         pp = Path(p)
         return pp if pp.is_absolute() else (base_dir / pp)
 
-    fit_df = pd.read_csv(_resolve(args.fit_results))
+    fit_results_path = args.fit_results if args.fit_results is not None else \
+        str(base_dir / "workspace" / "results" / args.run_id / "gw_fit_results.csv")
+    fit_df = pd.read_csv(_resolve(fit_results_path))
     input_df = pd.read_csv(_resolve(args.gray_box_input))
 
     # Load timeseries once
@@ -264,8 +396,10 @@ def main() -> int:
 
     rf_daily = pd.read_csv(gw_shell.RF_DATA_PATH, parse_dates=["date time"]).rename(columns=str).set_index("date time")
 
-    # Identify low-R² stations
+    # Identify low training-R² stations — pairing changes can only fix poor fit,
+    # not train/val generalisation gaps (which are a model-structure problem).
     fit_df["r2"] = pd.to_numeric(fit_df.get("r2"), errors="coerce")
+    fit_df["r2_val"] = pd.to_numeric(fit_df.get("r2_val"), errors="coerce")
     low = fit_df[fit_df["r2"].notna() & (fit_df["r2"] < args.r2_threshold)].copy()
 
     # Merge group/inputs
@@ -290,36 +424,40 @@ def main() -> int:
         h_obs = gw_daily[st_id].values
 
         rf_candidates = rank_rf_candidates(st_id, h_obs, rf_daily, max_lag=args.max_lag, top_k=args.top_k_rf, include=baseline_rf)
-        ups_candidates = rank_ups_candidates(st_id, h_obs, gw_daily, max_lag=args.max_lag, top_k=args.top_k_ups, include=baseline_ups)
+
+        # Use pre-computed geographic candidates from 02_pairing if available,
+        # so the upstream search stays physically constrained rather than scanning all stations.
+        geo_pool_str = ""
+        if "ups_candidates" in input_df.columns:
+            mask_st = input_df["st_id"] == st_id
+            if mask_st.any():
+                geo_pool_str = str(input_df.loc[mask_st, "ups_candidates"].values[0])
+        geo_pool = [c.strip() for c in geo_pool_str.split(",")
+                    if c.strip() and c.strip() not in ("nan", "none", "")]
+        ups_candidates = rank_ups_candidates(
+            st_id, h_obs, gw_daily, max_lag=args.max_lag, top_k=args.top_k_ups,
+            include=baseline_ups,
+            candidates=geo_pool if geo_pool else None,
+        )
 
         current_rf = baseline_rf
         current_ups = baseline_ups
 
-        # Baseline fit (for delta)
-        try:
-            baseline = fit_combo(
-                st_id=st_id,
-                rf_id=current_rf,
-                ups_id=current_ups,
-                group_name=group_name,
-                gw_hourly=gw_hourly,
-                gw_daily=gw_daily,
-                rf_daily=rf_daily,
-                max_lag=args.max_lag,
-                n_starts=max(2, args.n_starts),
-            )
-        except Exception:
-            baseline = FitOutcome(
-                st_id=st_id,
-                rf_id=current_rf,
-                ups_id=current_ups,
-                group_name=group_name,
-                model=str(row.get("model", "")),
-                rmse=float(row.get("rmse", np.nan)),
-                r2=float(row.get("r2", np.nan)),
-                rain_lag_days=int(row.get("rain_lag_days", 0) if pd.notna(row.get("rain_lag_days", 0)) else 0),
-                up_lag_days=int(row.get("up_lag_days", 0) if pd.notna(row.get("up_lag_days", 0)) else 0),
-            )
+        # Use stored fit results as baseline — avoids optimizer noise from a fresh re-fit
+        # which could corrupt the delta_r2 comparison.
+        baseline = FitOutcome(
+            st_id=st_id,
+            rf_id=current_rf,
+            ups_id=current_ups,
+            group_name=group_name,
+            model=str(row.get("model", "")),
+            rmse=float(row.get("rmse", np.nan)),
+            r2=float(row.get("r2", np.nan)),
+            rain_lag_days=int(row.get("rain_lag_days", 0) if pd.notna(row.get("rain_lag_days", 0)) else 0),
+            up_lag_days=int(row.get("up_lag_days", 0) if pd.notna(row.get("up_lag_days", 0)) else 0),
+            r2_val=float(row.get("r2_val", np.nan)) if pd.notna(row.get("r2_val", np.nan)) else float("nan"),
+            rmse_val=float(row.get("rmse_val", np.nan)) if pd.notna(row.get("rmse_val", np.nan)) else float("nan"),
+        )
 
         best_overall = baseline
 
@@ -350,7 +488,7 @@ def main() -> int:
                         "rain_lag_days": out.rain_lag_days,
                         "up_lag_days": out.up_lag_days,
                     })
-                    if out.rmse < best_rf_out.rmse:
+                    if _select_metric(out) > _select_metric(best_rf_out):
                         best_rf_out = out
                 except Exception as e:
                     trials.append({
@@ -390,7 +528,7 @@ def main() -> int:
                         "rain_lag_days": out.rain_lag_days,
                         "up_lag_days": out.up_lag_days,
                     })
-                    if out.rmse < best_ups_out.rmse:
+                    if _select_metric(out) > _select_metric(best_ups_out):
                         best_ups_out = out
                 except Exception as e:
                     trials.append({
@@ -412,12 +550,16 @@ def main() -> int:
             "baseline_model": baseline.model,
             "baseline_rmse": baseline.rmse,
             "baseline_r2": baseline.r2,
+            "baseline_r2_val": baseline.r2_val,
             "best_rf": best_overall.rf_id,
             "best_ups": best_overall.ups_id,
             "best_model": best_overall.model,
             "best_rmse": best_overall.rmse,
             "best_r2": best_overall.r2,
+            "best_r2_val": best_overall.r2_val,
             "delta_r2": (best_overall.r2 - baseline.r2) if np.isfinite(baseline.r2) else np.nan,
+            "delta_r2_val": (best_overall.r2_val - baseline.r2_val)
+                if np.isfinite(baseline.r2_val) and np.isfinite(best_overall.r2_val) else np.nan,
             "delta_rmse": (baseline.rmse - best_overall.rmse) if np.isfinite(baseline.rmse) else np.nan,
             "best_rain_lag_days": best_overall.rain_lag_days,
             "best_up_lag_days": best_overall.up_lag_days,
@@ -433,8 +575,28 @@ def main() -> int:
     print(f"Wrote summary: {out_summary}")
     print(f"Wrote trials: {out_trials}")
     if summary_rows:
-        show = pd.DataFrame(summary_rows).sort_values("delta_r2", ascending=False)
-        print(show[["st_id", "baseline_r2", "best_r2", "delta_r2", "baseline_rf", "best_rf", "baseline_ups", "best_ups"]].head(20).to_string(index=False))
+        show = pd.DataFrame(summary_rows).sort_values("delta_r2_val", ascending=False)
+        print(show[["st_id", "baseline_r2", "best_r2", "delta_r2", "baseline_r2_val", "best_r2_val", "delta_r2_val", "baseline_rf", "best_rf", "baseline_ups", "best_ups"]].head(20).to_string(index=False))
+
+    # Write optimized input CSV with improved pairings applied
+    out_optimized = _resolve(args.output_optimized)
+    input_csv = _resolve(args.gray_box_input)
+    df_optimized = _apply_improvements(
+        input_csv=input_csv,
+        summary_rows=summary_rows,
+        out_csv=out_optimized,
+        min_delta_r2=args.min_improvement,
+    )
+
+    # Draw the optimized upstream map for visual comparison with the initial map
+    shp_path = str(base_dir / "data" / "Zhuoshui Alluvial Fan" / "Zhuoshui Alluvial Fan.shp")
+    map_out = base_dir / "workspace" / "maps" / "upstream_links_optimized.tiff"
+    _plot_upstream_map(
+        df_links=df_optimized,
+        title="Upstream Links — Optimized Pairings",
+        out_path=map_out,
+        shp_path=shp_path,
+    )
 
     return 0
 

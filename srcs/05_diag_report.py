@@ -168,15 +168,22 @@ def build_diagnostics(
 
 
 def main() -> int:
+    base_dir = Path(__file__).resolve().parents[1]
+
     parser = argparse.ArgumentParser(description="Generate diagnostics report for low-R² stations.")
     parser.add_argument(
+        "--run-id",
+        default="initial",
+        help="Run tag matching the one used in 03_run_model.py. Sets default --fit-results path.",
+    )
+    parser.add_argument(
         "--fit-results",
-        default="../workspace/results/gw_fit_results.csv",
-        help="Path to gw_fit_results.csv",
+        default=None,
+        help="Path to gw_fit_results.csv. Defaults to workspace/results/{run-id}/gw_fit_results.csv.",
     )
     parser.add_argument(
         "--gray-box-input",
-        default="../data/gray_box_input.csv",
+        default=str(base_dir / "data" / "gray_box_input.csv"),
         help="Path to gray_box_input.csv (optional merge for metadata)",
     )
     parser.add_argument(
@@ -199,13 +206,15 @@ def main() -> int:
     )
     parser.add_argument(
         "--output",
-        default="../workspace/diagnostics/diagnostics_report_r2_below_0p5.csv",
+        default=str(base_dir / "workspace" / "diagnostics" / "diagnostics_report_r2_below_0p5.csv"),
         help="Output CSV path",
     )
 
     args = parser.parse_args()
 
-    fit_path = Path(args.fit_results)
+    fit_results_path = args.fit_results if args.fit_results is not None else \
+        str(base_dir / "workspace" / "results" / args.run_id / "gw_fit_results.csv")
+    fit_path = Path(fit_results_path)
     if not fit_path.exists():
         raise FileNotFoundError(f"fit results not found: {fit_path}")
 

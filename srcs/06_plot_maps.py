@@ -182,14 +182,20 @@ def _plot_group(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot station performance maps (good/medium/low) within Zhuoshui Alluvial Fan")
-    parser.add_argument("--results", type=Path, default=Path("workspace/results/gw_fit_results.csv"))
+    parser.add_argument(
+        "--run-id",
+        default="initial",
+        help="Run tag matching the one used in 03_run_model.py (default: initial). "
+             "Sets default --results and --outdir to workspace/results/{run-id}/.",
+    )
+    parser.add_argument("--results", type=Path, default=None)
     parser.add_argument("--input", type=Path, default=Path("data/gray_box_input.csv"))
     parser.add_argument(
         "--boundary",
         type=Path,
         default=Path("data/Zhuoshui Alluvial Fan/Zhuoshui Alluvial Fan.shp"),
     )
-    parser.add_argument("--outdir", type=Path, default=Path("workspace/results/figures"))
+    parser.add_argument("--outdir", type=Path, default=None)
     parser.add_argument("--r2-medium", type=float, default=0.5, help="Medium/low threshold (default: 0.5)")
     parser.add_argument("--r2-good", type=float, default=0.7, help="Good/medium threshold (default: 0.7)")
     parser.add_argument("--no-clip", action="store_true", help="Do not clip points to the boundary")
@@ -216,8 +222,13 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    run_root = Path("workspace/results") / args.run_id
+    results_path = args.results if args.results is not None else run_root / "gw_fit_results.csv"
+    outdir = args.outdir if args.outdir is not None else run_root / "figures"
+    outdir.mkdir(parents=True, exist_ok=True)
+
     setup_font()
-    results_df = _read_results(args.results)
+    results_df = _read_results(results_path)
     xy_df = _read_station_xy(args.input)
     boundary = _load_boundary(args.boundary)
     stations = _make_station_gdf(results_df, xy_df)
@@ -241,7 +252,7 @@ def main() -> int:
         points=good,
         title=f"Good performance (R² ≥ {r2_good:.2f}) — n={len(good)}",
         color="#2ca25f",
-        out_path=args.outdir / "performance_good.tiff",
+        out_path=outdir / "performance_good.tiff",
         label_col=args.label_col,
         add_labels=add_labels,
         label_font_size=args.label_font_size,
@@ -253,7 +264,7 @@ def main() -> int:
         points=medium,
         title=f"Medium performance ({r2_med:.2f} ≤ R² < {r2_good:.2f}) — n={len(medium)}",
         color="#ff7f00",
-        out_path=args.outdir / "performance_medium.tiff",
+        out_path=outdir / "performance_medium.tiff",
         label_col=args.label_col,
         add_labels=add_labels,
         label_font_size=args.label_font_size,
@@ -265,7 +276,7 @@ def main() -> int:
         points=low,
         title=f"Low performance (R² < {r2_med:.2f}) — n={len(low)}",
         color="#de2d26",
-        out_path=args.outdir / "performance_low.tiff",
+        out_path=outdir / "performance_low.tiff",
         label_col=args.label_col,
         add_labels=add_labels,
         label_font_size=args.label_font_size,
@@ -274,9 +285,9 @@ def main() -> int:
     )
 
     print("Wrote:")
-    print(f"  {args.outdir / 'performance_good.tiff'}")
-    print(f"  {args.outdir / 'performance_medium.tiff'}")
-    print(f"  {args.outdir / 'performance_low.tiff'}")
+    print(f"  {outdir / 'performance_good.tiff'}")
+    print(f"  {outdir / 'performance_medium.tiff'}")
+    print(f"  {outdir / 'performance_low.tiff'}")
     return 0
 
 

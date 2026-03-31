@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from scipy.spatial import Delaunay
 from scipy.spatial.distance import cdist
 from scipy.stats import spearmanr, pearsonr
 from scipy.signal import butter, filtfilt
@@ -16,14 +17,16 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
 from rklib import StationMapFig, NorthArrow, ScaleBar, setup_font, savefig as rklib_savefig
 
+_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 TWD97_CRS = CRS.from_string("+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +units=m +no_defs")
-BOUNDARY_SHP = "../data/Zhuoshui Alluvial Fan/Zhuoshui Alluvial Fan.shp"
-GW_META_IN = "../data/raw/gw_stations_prefilter.csv"
-GW_DATA_IN = "../data/raw/gw_timeseries_raw.csv"
-GW_META_OUT = "../data/gw_stations.csv"
-GW_DATA_OUT = "../data/gw_timeseries.csv"
-RF_META_IN = "../data/rf_stations.csv"
-RF_DATA_IN = "../data/rf_timeseries.csv"
+BOUNDARY_SHP = os.path.join(_BASE_DIR, "data", "Zhuoshui Alluvial Fan", "Zhuoshui Alluvial Fan.shp")
+GW_META_IN = os.path.join(_BASE_DIR, "data", "raw", "gw_stations_prefilter.csv")
+GW_DATA_IN = os.path.join(_BASE_DIR, "data", "raw", "gw_timeseries_raw.csv")
+GW_META_OUT = os.path.join(_BASE_DIR, "data", "gw_stations.csv")
+GW_DATA_OUT = os.path.join(_BASE_DIR, "data", "gw_timeseries.csv")
+RF_META_IN = os.path.join(_BASE_DIR, "data", "rf_stations.csv")
+RF_DATA_IN = os.path.join(_BASE_DIR, "data", "rf_timeseries.csv")
 
 # Coastal / inland classification parameters
 CUTOFF_CPD = 0.5
@@ -33,6 +36,12 @@ M2_TARGET_CPD = 1.9323
 M2_TOL_CPD = 0.05
 M2_MIN_REL_AMP = 0.1
 COASTAL_MAX_DIST_M = 5000.0
+
+# Upstream pairing parameters (Delaunay + head-gradient + lag-correlation)
+MIN_UPS_HEAD_DIFF_M = 0.5       # primary head advantage threshold (m) — strict, for steep gradient zones
+MIN_UPS_HEAD_DIFF_M_RELAXED = 0.1  # relaxed threshold (m) — fallback for flat distal fan
+MAX_UPS_LAG_DAYS = 90           # max lag to search when correlating upstream → downstream
+MIN_UPS_OVERLAP_DAYS = 60       # minimum overlapping daily records required
 
 
 def filter_stations_within_boundary(df_gw_station, shp_path=BOUNDARY_SHP):
@@ -545,7 +554,7 @@ def plot_coastal_stations(df_class, coastline):
 
 
 def groundwater_upstream_pairing(df_gw_station, df_gw_data, df_rain_station, df_rf_data):
-    print("\nStep 2: Groundwater upstream pairing")
+    print("\nStep 2: Groundwater upstream pairing (head-gradient + lag-correlation)")
     if df_gw_station is None or df_gw_data is None:
         print("Groundwater data missing. Skipping Step 2.")
         return None
@@ -566,63 +575,151 @@ def groundwater_upstream_pairing(df_gw_station, df_gw_data, df_rain_station, df_
     else:
         df_rf_data_daily = None
 
-    min_x = 161250
-    max_x = 220000
-    step = 6600
+    # --- Physical approach: Delaunay triangulation + head gradient + lag correlation ---
+    # Candidate upstream stations are restricted to Delaunay (natural) neighbors only.
+    # This guarantees a planar graph — no upstream links can cross — which is physically
+    # required since groundwater streamlines cannot intersect.
+    # Among Delaunay neighbors, an upstream candidate must also:
+    #   1. Lie in the upgradient half-plane (dot product with regional gradient > 0)
+    #   2. Have a higher mean head by at least MIN_UPS_HEAD_DIFF_M
+    # Final selection ranks candidates by Pearson r at the optimal lag.
 
-    groups = []
-    for x_start in range(min_x, max_x, step):
-        mask = (df_gw_station['TM_X97'] >= x_start) & (df_gw_station['TM_X97'] < x_start + step)
-        group = df_gw_station[mask].sort_values('TM_X97')
-        if len(group) > 0:
-            groups.append(group)
+    mean_heads = {
+        sid: df_gw_data_daily[sid].mean()
+        for sid in df_gw_station['st_id']
+        if sid in df_gw_data_daily.columns
+    }
 
-    print("Finding upstream stations...")
+    coords = df_gw_station.set_index('st_id')[['TM_X97', 'TM_Y97']]
+
+    # Estimate regional upgradient direction from a linear head trend surface.
+    valid_pts = [
+        (coords.loc[sid, 'TM_X97'], coords.loc[sid, 'TM_Y97'], h)
+        for sid, h in mean_heads.items()
+        if sid in coords.index and not np.isnan(h)
+    ]
+    if len(valid_pts) >= 3:
+        xs = np.array([p[0] for p in valid_pts])
+        ys = np.array([p[1] for p in valid_pts])
+        hs = np.array([p[2] for p in valid_pts])
+        A = np.column_stack([xs, ys, np.ones(len(xs))])
+        coeff, _, _, _ = np.linalg.lstsq(A, hs, rcond=None)
+        grad_x, grad_y = coeff[0], coeff[1]
+        grad_norm = np.hypot(grad_x, grad_y)
+        d_up = np.array([grad_x, grad_y]) / grad_norm if grad_norm > 0 else np.array([1.0, 0.0])
+    else:
+        d_up = np.array([1.0, 0.0])  # fallback: east
+
+    azimuth = np.degrees(np.arctan2(d_up[0], d_up[1]))
+    print(f"  Regional upgradient azimuth ≈ {azimuth:.1f}° from N  (vector: dx={d_up[0]:.3f}, dy={d_up[1]:.3f})")
+
+    # Build Delaunay triangulation and extract adjacency list
+    st_ids_ordered = coords.index.tolist()
+    pts = coords[['TM_X97', 'TM_Y97']].values
+    tri = Delaunay(pts)
+    delaunay_neighbors = {sid: set() for sid in st_ids_ordered}
+    for simplex in tri.simplices:
+        a, b, c = simplex
+        delaunay_neighbors[st_ids_ordered[a]].update([st_ids_ordered[b], st_ids_ordered[c]])
+        delaunay_neighbors[st_ids_ordered[b]].update([st_ids_ordered[a], st_ids_ordered[c]])
+        delaunay_neighbors[st_ids_ordered[c]].update([st_ids_ordered[a], st_ids_ordered[b]])
+
+    print("Finding upstream stations (Delaunay + head-gradient + lag-correlation)...")
     groundwater_and_upstream = []
-    for idx, group in enumerate(groups):
-        if idx < len(groups) - 1:
-            next_group = groups[idx + 1]
-            coords1 = group[['TM_X97', 'TM_Y97']].values
-            coords2 = next_group[['TM_X97', 'TM_Y97']].values
-            dist_matrix = cdist(coords1, coords2)
-            min_dist_idx = np.argmin(dist_matrix, axis=1)
+    for _, row in tqdm(df_gw_station.iterrows(), total=len(df_gw_station), desc="Pairing upstream"):
+        st_id = row['st_id']
+        x0, y0 = row['TM_X97'], row['TM_Y97']
+        h0 = mean_heads.get(st_id, np.nan)
 
-            for j in range(len(group)):
-                gw_station = group.iloc[j]
-                up_station = next_group.iloc[min_dist_idx[j]]
-                groundwater_and_upstream.append({
-                    'gw_st': str(gw_station['Station']),
-                    'gw_id': gw_station['st_id'],
-                    'gw_TM_X97': gw_station['TM_X97'],
-                    'gw_TM_Y97': gw_station['TM_Y97'],
-                    'ups_station': str(up_station['Station']),
-                    'ups_id': up_station['st_id'],
-                    'ups_TM_X97': up_station['TM_X97'],
-                    'ups_TM_Y97': up_station['TM_Y97']
-                })
+        # Candidate search — three passes, each progressively more permissive:
+        #   Pass 1 (strict):    upgradient half-plane  + head diff ≥ 0.5 m
+        #   Pass 2 (relaxed):   upgradient half-plane  + head diff ≥ 0.1 m
+        #                       → handles flat distal-fan zones
+        #   Pass 3 (direction-free): any Delaunay neighbor + head diff ≥ 0.1 m
+        #                       → handles boundary stations where local flow diverges
+        #                          from the regional gradient (e.g. northern fan edge)
+        def _collect_candidates(head_thresh, require_halfplane=True):
+            cands = []
+            for cand_id in delaunay_neighbors.get(st_id, set()):
+                cx, cy = coords.loc[cand_id, 'TM_X97'], coords.loc[cand_id, 'TM_Y97']
+                dx, dy = cx - x0, cy - y0
+                dist = np.hypot(dx, dy)
+                if dist == 0:
+                    continue
+                if require_halfplane and np.dot(np.array([dx, dy]) / dist, d_up) <= 0:
+                    continue
+                h_cand = mean_heads.get(cand_id, np.nan)
+                if np.isnan(h_cand) or np.isnan(h0):
+                    continue
+                if h_cand - h0 < head_thresh:
+                    continue
+                cands.append((cand_id, dist, h_cand - h0))
+            return cands
+
+        candidates = _collect_candidates(MIN_UPS_HEAD_DIFF_M)
+        if not candidates:
+            candidates = _collect_candidates(MIN_UPS_HEAD_DIFF_M_RELAXED)
+        if not candidates:
+            candidates = _collect_candidates(MIN_UPS_HEAD_DIFF_M_RELAXED, require_halfplane=False)
+
+        if not candidates:
+            groundwater_and_upstream.append({
+                'gw_st': str(row['Station']),
+                'gw_id': st_id,
+                'gw_TM_X97': x0,
+                'gw_TM_Y97': y0,
+                'ups_id': 'none',
+                'ups_candidates': 'none',
+            })
+            continue
+
+        # Rank by lag cross-correlation: upstream series leads downstream
+        scored = []
+        if st_id in df_gw_data_daily.columns:
+            dn_series = df_gw_data_daily[st_id]
+            for cand_id, dist, head_diff in candidates:
+                if cand_id not in df_gw_data_daily.columns:
+                    continue
+                r, lag, _ = _scan_lagged_correlation(
+                    dn_series,
+                    df_gw_data_daily[cand_id],
+                    max_lag_days=MAX_UPS_LAG_DAYS,
+                    min_overlap_days=MIN_UPS_OVERLAP_DAYS,
+                )
+                if r is not None and not np.isnan(r):
+                    scored.append((cand_id, r, lag, head_diff, dist))
+
+        if not scored:
+            # Fallback: nearest upgradient station (no usable time series overlap)
+            candidates.sort(key=lambda c: c[1])
+            ups_id = candidates[0][0]
+            ups_candidates = ','.join(c[0] for c in candidates[:3])
         else:
-            for _, gw_station in group.iterrows():
-                groundwater_and_upstream.append({
-                    'gw_st': str(gw_station['Station']),
-                    'gw_id': gw_station['st_id'],
-                    'gw_TM_X97': gw_station['TM_X97'],
-                    'gw_TM_Y97': gw_station['TM_Y97'],
-                    'ups_station': 'none',
-                    'ups_id': 'none',
-                    'ups_TM_X97': np.nan,
-                    'ups_TM_Y97': np.nan
-                })
+            scored.sort(key=lambda s: s[1], reverse=True)  # best r first
+            ups_id = scored[0][0]
+            ups_candidates = ','.join(s[0] for s in scored[:3])
+
+        groundwater_and_upstream.append({
+            'gw_st': str(row['Station']),
+            'gw_id': st_id,
+            'gw_TM_X97': x0,
+            'gw_TM_Y97': y0,
+            'ups_id': ups_id,
+            'ups_candidates': ups_candidates,
+        })
 
     df_input = pd.DataFrame(groundwater_and_upstream)
     if df_input.empty:
         print("No upstream relationships computed.")
         return df_input
 
-    print("Calculating correlations...")
+    print("Scoring selected pairs...")
     df_input['spearmanr'] = np.nan
     df_input['correlation'] = ''
+    df_input['ups_lag_days'] = np.nan
+    df_input['ups_head_diff_m'] = np.nan
 
-    for i in tqdm(range(len(df_input)), desc="Calculating correlation"):
+    for i in tqdm(range(len(df_input)), desc="Scoring pairs"):
         gw_id = df_input.loc[i, 'gw_id']
         up_id = df_input.loc[i, 'ups_id']
 
@@ -634,32 +731,38 @@ def groundwater_upstream_pairing(df_gw_station, df_gw_data, df_rain_station, df_
             df_input.loc[i, 'correlation'] = 'Missing Data'
             continue
 
-        df_pair = df_gw_data_daily[[gw_id, up_id]].dropna()
-        if len(df_pair) > 10:
-            r, _ = spearmanr(df_pair.iloc[:, 0], df_pair.iloc[:, 1])
-            r = round(r, 3)
-            df_input.loc[i, 'spearmanr'] = r
+        h_gw = mean_heads.get(gw_id, np.nan)
+        h_up = mean_heads.get(up_id, np.nan)
+        if not (np.isnan(h_gw) or np.isnan(h_up)):
+            df_input.loc[i, 'ups_head_diff_m'] = round(h_up - h_gw, 2)
 
-            if abs(r) >= 0.7:
-                df_input.loc[i, 'correlation'] = 'Strong'
-            elif abs(r) >= 0.3:
-                df_input.loc[i, 'correlation'] = 'Medium'
-            else:
-                df_input.loc[i, 'correlation'] = 'Low'
-        else:
+        r, lag, _ = _scan_lagged_correlation(
+            df_gw_data_daily[gw_id],
+            df_gw_data_daily[up_id],
+            max_lag_days=MAX_UPS_LAG_DAYS,
+            min_overlap_days=MIN_UPS_OVERLAP_DAYS,
+        )
+
+        if r is None or np.isnan(r):
             df_input.loc[i, 'correlation'] = 'Insufficient Data'
+            continue
+
+        df_input.loc[i, 'spearmanr'] = round(r, 3)
+        df_input.loc[i, 'ups_lag_days'] = lag
+
+        if abs(r) >= 0.7:
+            df_input.loc[i, 'correlation'] = 'Strong'
+        elif abs(r) >= 0.3:
+            df_input.loc[i, 'correlation'] = 'Medium'
+        else:
+            df_input.loc[i, 'correlation'] = 'Low'
 
     df_input['st_id'] = df_input['gw_id']
 
-    # Keep upstream ID for plotting, but drop unused details
-    df_input = df_input.drop(
-        columns=['ups_station', 'ups_TM_X97', 'ups_TM_Y97'],
-        errors='ignore',
-    )
-
     desired_order = [
         'gw_st', 'st_id', 'gw_TM_X97', 'gw_TM_Y97',
-        'ups_id', 'spearmanr', 'correlation'
+        'ups_id', 'ups_candidates', 'spearmanr', 'correlation',
+        'ups_lag_days', 'ups_head_diff_m',
     ]
     existing_cols = [col for col in desired_order if col in df_input.columns]
     df_input = df_input[existing_cols]
@@ -733,9 +836,10 @@ def generate_visualization(df_input, df_gw_station, df_rain_station, shp_path=BO
         NorthArrow(ax, location='lower right').draw()
         ScaleBar(ax, location='lower center', length_km=10).draw()
 
-        map_out = '../workspace/maps/final_map_V3.tiff'
+        map_out = os.path.join(_BASE_DIR, 'workspace', 'maps', 'upstream_links_initial.tiff')
+        os.makedirs(os.path.dirname(map_out), exist_ok=True)
         rklib_savefig(fig, map_out)
-        print(f"Final map saved to {map_out}")
+        print(f"Initial upstream map saved to {map_out}")
     except Exception as exc:
         print(f"Error during visualization: {exc}")
         import traceback
@@ -802,7 +906,8 @@ def plot_station_map(df_gw_station, df_rain_station, shp_path=BOUNDARY_SHP):
         NorthArrow(ax, location='lower right').draw()
         ScaleBar(ax, location='lower center', length_km=10).draw()
 
-        map_out = '../workspace/maps/station_map.tiff'
+        map_out = os.path.join(_BASE_DIR, 'workspace', 'maps', 'station_map.tiff')
+        os.makedirs(os.path.dirname(map_out), exist_ok=True)
         rklib_savefig(fig, map_out)
         print(f"Station map saved to {map_out}")
     except Exception as exc:
@@ -894,7 +999,8 @@ def plot_station_map_subplots(df_gw_station, df_rain_station, shp_path=BOUNDARY_
         ScaleBar(ax_rf, location='lower center', length_km=10).draw()
 
         fig.tight_layout()
-        map_out = '../workspace/maps/station_map_subplots.tiff'
+        map_out = os.path.join(_BASE_DIR, 'workspace', 'maps', 'station_map_subplots.tiff')
+        os.makedirs(os.path.dirname(map_out), exist_ok=True)
         rklib_savefig(fig, map_out)
         print(f"Subplot station map saved to {map_out}")
     except Exception as exc:
@@ -908,7 +1014,7 @@ def animate_upstream_links(
     df_gw_station,
     df_rain_station,
     shp_path=BOUNDARY_SHP,
-    out_path="../workspace/animation_V3.gif",
+    out_path=None,
     interval_ms=300,
 ):
     print("Generating animated visualization...")
@@ -1005,9 +1111,10 @@ def animate_upstream_links(
             repeat=False,
         )
 
-        out_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
+        out_dir = os.path.join(_BASE_DIR, "workspace")
         os.makedirs(out_dir, exist_ok=True)
-        gif_path = os.path.join(out_dir, os.path.basename(out_path))
+        gif_name = os.path.basename(out_path) if out_path else "animation_V3.gif"
+        gif_path = os.path.join(out_dir, gif_name)
         writer = PillowWriter(fps=max(1, int(1000 / interval_ms)))
         anim.save(gif_path, writer=writer)
         plt.close(fig)
@@ -1065,9 +1172,12 @@ def main():
     # add a column active == 0 for all rows in df_input as last column
     df_input['active'] = 0
 
-    output_path = '../data/gray_box_input.csv'
-    df_input.to_csv(output_path, index=False, encoding='utf-8')
-    print(f"Results saved to {output_path}")
+    raw_path = os.path.join(_BASE_DIR, 'data', 'gray_box_input_raw.csv')
+    working_path = os.path.join(_BASE_DIR, 'data', 'gray_box_input.csv')
+    df_input.to_csv(raw_path, index=False, encoding='utf-8')
+    df_input.to_csv(working_path, index=False, encoding='utf-8')
+    print(f"Raw pairings saved to {raw_path}")
+    print(f"Working copy saved to {working_path}")
 
     print("\nSummary of Correlations:")
     print(df_input['correlation'].value_counts())

@@ -1,9 +1,10 @@
 import sys
-import subprocess
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
 
 import pandas as pd
+
+import gw_shell
 
 
 def load_gray_box_input(csv_path: Path) -> pd.DataFrame:
@@ -52,30 +53,39 @@ def build_station_arguments(row: pd.Series) -> dict:
     return args
 
 
-def build_command(gw_shell_path: Path, args_dict: dict) -> list:
-    cmd = [sys.executable, str(gw_shell_path)]
-    for key, value in args_dict.items():
-        cmd.append(f"{key}={value}")
-    return cmd
+
+def merge_results(output_root: Path) -> None:
+    """Merge all per-station CSV files into a single gw_fit_results.csv."""
+    per_station_dir = output_root / "per_station"
+    if not per_station_dir.exists():
+        print("No per-station results directory found.")
+        return
+
+    csv_files = sorted(per_station_dir.glob("*.csv"))
+    if not csv_files:
+        print("No per-station result files found to merge.")
+        return
+
+    frames = [pd.read_csv(f) for f in csv_files]
+    df_all = pd.concat(frames, ignore_index=True)
+
+    out_path = output_root / "gw_fit_results.csv"
+    df_all.to_csv(out_path, index=False)
+    print(f"Merged {len(csv_files)} station result(s) → {out_path}")
 
 
 def _run_single_station(task: tuple) -> None:
-    """Worker function to run calibration for a single station in a subprocess."""
-    row_dict, base_dir_str = task
-    base_dir = Path(base_dir_str)
-    gw_shell_path = base_dir / "srcs" / "gw_shell.py"
+    """Worker function to run calibration for a single station via direct function call."""
+    row_dict, base_dir_str, output_root_str = task
     row = pd.Series(row_dict)
     args_dict = build_station_arguments(row)
-    cmd = build_command(gw_shell_path, args_dict)
+    args_dict["output_root"] = output_root_str
     station_label = args_dict.get('st_id', args_dict.get('gw_st', 'unknown'))
-    print(
-        f"Running station st_id={station_label} "
-        f"group={args_dict['group_name']} with command:\n  {' '.join(cmd)}"
-    )
-    subprocess.run(cmd, check=True, cwd=base_dir / "srcs")
+    print(f"Running station st_id={station_label} group={args_dict['group_name']}")
+    gw_shell.run_station(args_dict)
 
 
-def run_group(group_name: str, df_group: pd.DataFrame, base_dir: Path) -> None:
+def run_group(group_name: str, df_group: pd.DataFrame, base_dir: Path, output_root: Path) -> None:
     # Ensure we only use rows for this group
     df_group = df_group.copy()
     df_group = df_group[df_group["group"] == group_name]
@@ -85,7 +95,7 @@ def run_group(group_name: str, df_group: pd.DataFrame, base_dir: Path) -> None:
         return
 
     tasks = [
-        (row.to_dict(), str(base_dir))
+        (row.to_dict(), str(base_dir), str(output_root))
         for _, row in df_group.iterrows()
     ]
 
@@ -100,8 +110,34 @@ def run_group(group_name: str, df_group: pd.DataFrame, base_dir: Path) -> None:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Run gray-box model for active stations.")
+    parser.add_argument(
+        "--input",
+        default="data/gray_box_input.csv",
+        help="Path to input CSV (relative to project root or absolute). "
+             "Use data/gray_box_input_optimized.csv to re-run with optimized pairings.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run stations even if a per-station result file already exists.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default="initial",
+        help="Tag for this run. Results are written to workspace/results/{run-id}/. "
+             "Use 'optimized' when re-running with gray_box_input_optimized.csv.",
+    )
+    args = parser.parse_args()
+
     base_dir = Path(__file__).resolve().parents[1]
-    csv_path = base_dir / "data" / "gray_box_input.csv"
+    input_path = Path(args.input)
+    csv_path = input_path if input_path.is_absolute() else base_dir / input_path
+
+    output_root = base_dir / "workspace" / "results" / args.run_id
+    output_root.mkdir(parents=True, exist_ok=True)
+    print(f"Output root: {output_root}")
 
     df = load_gray_box_input(csv_path)
     df_active = filter_active(df)
@@ -110,13 +146,29 @@ def main():
         print("No active rows found in gray_box_input.csv")
         return
 
+    # Skip stations that already have results unless --force is given
+    if not args.force:
+        per_station_dir = output_root / "per_station"
+        done = {f.stem for f in per_station_dir.glob("*.csv")} if per_station_dir.exists() else set()
+        skipped = df_active["st_id"].astype(str).isin(done)
+        if skipped.any():
+            print(f"Skipping {skipped.sum()} already-done station(s). Use --force to re-run.")
+        df_active = df_active[~skipped]
+
+    if df_active.empty:
+        print("All active stations already have results. Use --force to re-run.")
+        merge_results(output_root)
+        return
+
     groups_present = sorted(df_active["group"].unique().tolist())
     print(f"Active groups present: {groups_present}")
 
     for group_name in ["inland", "coastal"]:
         if group_name in groups_present:
             df_group = df_active[df_active["group"] == group_name]
-            run_group(group_name, df_group, base_dir)
+            run_group(group_name, df_group, base_dir, output_root)
+
+    merge_results(output_root)
 
 
 if __name__ == "__main__":
