@@ -1007,7 +1007,7 @@ def run_station(args_params: dict) -> None:
 
         # Axes, title, legend
         ax_v.set_title(
-            f"{station_label} ({group_name}) — {MODEL_LABELS[result['model']]}",
+            f"{station_label} ({group_name}) — Model Type: {MODEL_IDS[result['model']]}",
             fontsize=14, fontweight="bold", pad=6,
         )
         ax_v.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
@@ -1151,7 +1151,7 @@ def run_station(args_params: dict) -> None:
                  transform=ax0.transAxes, fontsize=9, va="bottom", ha="center",
                  color="black", bbox=METRIC_BOX)
     ax0.set_title(
-        f"{station_label} ({group_name}) — {MODEL_LABELS[best_model['model']]} (best)",
+        f"{station_label} ({group_name}) — Model Type: {MODEL_IDS[best_model['model']]} (best)",
         fontsize=14, fontweight="bold", pad=6,
     )
     ax0.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
