@@ -919,6 +919,12 @@ def run_station(args_params: dict) -> None:
         'base_tz': '#e74c3c',     # red
         'filtered_tz': '#f39c12', # orange
     }
+    MODEL_LABELS = {
+        "base":        "Direct",
+        "filtered":    "Filtered",
+        "base_tz":     "Direct, z(t)",
+        "filtered_tz": "Filtered, z(t)",
+    }
     setup_font()
 
     # Per-variant plots
