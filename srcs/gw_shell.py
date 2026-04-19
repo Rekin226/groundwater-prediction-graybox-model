@@ -846,6 +846,9 @@ def _fit_model(
         "time_index": time_index[:n_cal],
         "time_index_val": time_index[n_cal:] if has_val else None,
         "h_obs_full": h_obs,
+        "rainfall_full": rainfall,
+        "amp_full": amp,
+        "amt_full": amt,
         "n_cal": n_cal,
         "time_index_full": time_index,
     }
@@ -1120,16 +1123,8 @@ def run_station(args_params: dict) -> None:
 
     time_best_full = best_model.get('time_index_full', best_model['time_index'])
     h_obs_best_full = best_model.get('h_obs_full', best_model['h_obs'])
-    n_full = len(time_best_full)
-
-    def _pad_to_full(arr):
-        """Pad cal-only array with NaN to match full time range length."""
-        arr = np.asarray(arr, dtype=float)
-        if len(arr) >= n_full:
-            return arr[:n_full]
-        padded = np.full(n_full, np.nan)
-        padded[:len(arr)] = arr
-        return padded
+    rainfall_best_full = best_model.get('rainfall_full', best_model['rainfall'])
+    amp_best_full = best_model.get('amp_full', best_model['amp'])
 
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True,
                              gridspec_kw={"height_ratios": [2.5, 1, 1]})
@@ -1169,20 +1164,18 @@ def run_station(args_params: dict) -> None:
     ax0.legend(fontsize=9, loc="upper right", framealpha=0.85)
     ax0.grid(True, lw=0.3, alpha=0.4)
 
-    # Panel (b): Rainfall bars (padded to full period; cal-only data — val is NaN)
+    # Panel (b): Rainfall bars (full period — cal + val forcing)
     ax1 = axes[1]
-    rainfall_full = _pad_to_full(best_model['rainfall'])
-    ax1.bar(time_best_full, rainfall_full, width=1.0, color="C0", alpha=0.8)
+    ax1.bar(time_best_full, rainfall_best_full, width=1.0, color="C0", alpha=0.8)
     ax1.set_title(f"Rainfall — {args.get('rf_id', '')}", fontsize=12, fontweight="bold")
     ax1.set_ylabel("Rainfall (mm/day)", fontsize=11, fontweight="bold")
     ax1.set_xlim(t_start, t_end)
     ax1.margins(x=0)
     ax1.grid(True, lw=0.3, alpha=0.4)
 
-    # Panel (c): Tidal amplitude (padded; cal-only)
+    # Panel (c): Tidal amplitude (full period)
     ax2 = axes[2]
-    amp_full = _pad_to_full(best_model['amp'])
-    ax2.plot(time_best_full, amp_full, color="C2", lw=1.0, alpha=0.85)
+    ax2.plot(time_best_full, amp_best_full, color="C2", lw=1.0, alpha=0.85)
     amp_label_id = args.get('gw_st', args.get('st_id', ''))
     ax2.set_title(f"Tidal amplitude — {amp_label_id}", fontsize=12, fontweight="bold")
     ax2.set_ylabel("Amplitude (m)", fontsize=11, fontweight="bold")
