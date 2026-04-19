@@ -1025,14 +1025,12 @@ def run_station(args_params: dict) -> None:
     # --- Save results with KGE metrics ---
     station_label_key = args.get('st_id', args.get('gw_st', 'unknown'))
 
-    # Compute KGE for best model
+    # Compute KGE for best model (val arrays now surfaced by _fit_model)
     m_cal = compute_metrics(best_model['h_obs'], best_model['y_fit'])
     m_val = {"kge": np.nan, "kge_r": np.nan, "kge_alpha": np.nan, "kge_beta": np.nan, "bias": np.nan}
-    if best_model.get('y_fit_val') is not None and best_model.get('time_index_val') is not None:
-        n_cal_idx = len(best_model['time_index'])
-        h_obs_full = best_model.get('_h_obs_full')  # set below if available
-        if h_obs_full is not None:
-            m_val = compute_metrics(h_obs_full[n_cal_idx:], best_model['y_fit_val'])
+    if best_model.get('y_fit_val') is not None and best_model.get('h_obs_full') is not None:
+        n_cal_idx = best_model['n_cal']
+        m_val = compute_metrics(best_model['h_obs_full'][n_cal_idx:], best_model['y_fit_val'])
 
     # Best-variant results (main output)
     results = {
@@ -1070,11 +1068,16 @@ def run_station(args_params: dict) -> None:
     all_variant_rows = []
     for result in model_results:
         mc = compute_metrics(result['h_obs'], result['y_fit'])
+        if result.get('y_fit_val') is not None and result.get('h_obs_full') is not None:
+            mv = compute_metrics(result['h_obs_full'][result['n_cal']:], result['y_fit_val'])
+        else:
+            mv = {"kge": np.nan}
         row = {
             'st_id': station_label_key, 'model': result['model'],
             'r2': result['r2'], 'rmse': result['rmse'],
             'kge': mc['kge'], 'kge_r': mc['kge_r'],
             'r2_val': result['r2_val'], 'rmse_val': result['rmse_val'],
+            'kge_val': mv['kge'],
             'aic': result['aic'],
         }
         for name, val in zip(result['param_names'], result['params']):
