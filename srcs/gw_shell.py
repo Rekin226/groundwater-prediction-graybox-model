@@ -933,11 +933,17 @@ def run_station(args_params: dict) -> None:
         'base_tz': '#e74c3c',     # red
         'filtered_tz': '#f39c12', # orange
     }
+    MODEL_IDS = {
+        "base":        "M1",
+        "filtered":    "M2",
+        "base_tz":     "M3",
+        "filtered_tz": "M4",
+    }
     MODEL_LABELS = {
-        "base":        "Direct",
-        "filtered":    "Filtered",
-        "base_tz":     "Direct, z(t)",
-        "filtered_tz": "Filtered, z(t)",
+        "base":        "M1: Direct",
+        "filtered":    "M2: Filtered",
+        "base_tz":     "M3: Direct, z(t)",
+        "filtered_tz": "M4: Filtered, z(t)",
     }
     setup_font()
 
@@ -998,11 +1004,13 @@ def run_station(args_params: dict) -> None:
 
         # Axes, title, legend
         ax_v.set_title(
-            f"Station {station_label} — {MODEL_LABELS[result['model']]} model ({group_name})",
+            f"{station_label} — {MODEL_LABELS[result['model']]}",
             fontsize=14, fontweight="bold", pad=6,
         )
         ax_v.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
         ax_v.set_xlabel("Year", fontsize=12, fontweight="bold")
+        ax_v.set_xlim(t_start, t_end)
+        ax_v.margins(x=0)
         ax_v.xaxis.set_major_locator(mdates.YearLocator())
         ax_v.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
         ax_v.tick_params(axis="both", labelsize=9)
@@ -1047,18 +1055,20 @@ def run_station(args_params: dict) -> None:
         clr = _variant_colors[model_id]
         ax_ts.plot(result['time_index'], result['y_fit'],
                    color=clr, lw=lw, alpha=alpha, ls="-",
-                   label=MODEL_LABELS[model_id])
+                   label=MODEL_IDS[model_id])
         if result.get('y_fit_val') is not None and result.get('time_index_val') is not None:
             ax_ts.plot(result['time_index_val'], result['y_fit_val'],
                        color=clr, lw=lw, alpha=alpha, ls="--")
 
     ax_ts.axvline(SPLIT, color="black", ls="--", lw=1.5, alpha=0.9)
     ax_ts.set_title(
-        f"Station {station_label} ({group_name}) — Model comparison",
+        f"{station_label} ({group_name}) — Model comparison",
         fontsize=14, fontweight="bold", pad=6,
     )
     ax_ts.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
     ax_ts.set_xlabel("Year", fontsize=12, fontweight="bold")
+    ax_ts.set_xlim(t_start, t_end)
+    ax_ts.margins(x=0)
     ax_ts.xaxis.set_major_locator(mdates.YearLocator())
     ax_ts.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
     ax_ts.tick_params(axis="both", labelsize=9)
@@ -1095,10 +1105,12 @@ def run_station(args_params: dict) -> None:
     for j in range(len(col_labels)):
         tbl[(0, j)].set_facecolor("#e8e8e8")
         tbl[(0, j)].set_text_props(weight="bold")
-    ax_tbl.text(0.01, 0.05, "* best by KGE_val", transform=ax_tbl.transAxes,
-                fontsize=8, color="#555", ha="left", va="bottom")
 
     fig_c.tight_layout()
+    # Caption goes in figure coords, below the table subplot — avoids overlap.
+    fig_c.text(0.02, 0.01, "* best by KGE_val",
+               fontsize=8, color="#555", ha="left", va="bottom")
+    fig_c.subplots_adjust(bottom=0.08)
     rklib_savefig(fig_c, compare_dir / f"gw_compare_{station_label}.png")
     plt.close(fig_c)
 
@@ -1148,10 +1160,12 @@ def run_station(args_params: dict) -> None:
                  transform=ax0.transAxes, fontsize=9, va="bottom", ha="center",
                  color="black", bbox=METRIC_BOX)
     ax0.set_title(
-        f"Station {station_label} — Best: {MODEL_LABELS[best_model['model']]} ({group_name})",
+        f"{station_label} — {MODEL_LABELS[best_model['model']]} (best)",
         fontsize=14, fontweight="bold", pad=6,
     )
     ax0.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
+    ax0.set_xlim(t_start, t_end)
+    ax0.margins(x=0)
     ax0.legend(fontsize=9, loc="upper right", framealpha=0.85)
     ax0.grid(True, lw=0.3, alpha=0.4)
 
@@ -1161,6 +1175,8 @@ def run_station(args_params: dict) -> None:
     ax1.bar(time_best_full, rainfall_full, width=1.0, color="C0", alpha=0.8)
     ax1.set_title(f"Rainfall — {args.get('rf_id', '')}", fontsize=12, fontweight="bold")
     ax1.set_ylabel("Rainfall (mm/day)", fontsize=11, fontweight="bold")
+    ax1.set_xlim(t_start, t_end)
+    ax1.margins(x=0)
     ax1.grid(True, lw=0.3, alpha=0.4)
 
     # Panel (c): Tidal amplitude (padded; cal-only)
@@ -1171,6 +1187,8 @@ def run_station(args_params: dict) -> None:
     ax2.set_title(f"Tidal amplitude — {amp_label_id}", fontsize=12, fontweight="bold")
     ax2.set_ylabel("Amplitude (m)", fontsize=11, fontweight="bold")
     ax2.set_xlabel("Year", fontsize=12, fontweight="bold")
+    ax2.set_xlim(t_start, t_end)
+    ax2.margins(x=0)
     ax2.xaxis.set_major_locator(mdates.YearLocator())
     ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
     ax2.grid(True, lw=0.3, alpha=0.4)
