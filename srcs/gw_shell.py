@@ -775,14 +775,12 @@ def _fit_model(
     y_fit_val = None
     if has_val:
         try:
-            if use_absolute_t:
-                # z(t) models: predicted h0 (continuous simulation) + absolute time
-                h0_val = float(y_fit_cal[-1])
-                t_val = t[n_cal:]
-            else:
-                # constant-z models: observed h0 + relative time
-                h0_val = float(h_obs[n_cal])
-                t_val = t[n_cal:] - t[n_cal]
+            # Continuous hindcast across cal/val for ALL variants.
+            # Val metrics reflect model propagation from the cal-optimized end state;
+            # this removes noise-driven discontinuities present when h_obs[n_cal]
+            # happens to be a local anomaly (see spec §2, D1).
+            h0_val = float(y_fit_cal[-1])
+            t_val = t[n_cal:] if use_absolute_t else t[n_cal:] - t[n_cal]
             val_kwargs = dict(
                 rainfall=rainfall[n_cal:], amp=amp[n_cal:],
                 amt=amt[n_cal:] if is_coastal else None,
