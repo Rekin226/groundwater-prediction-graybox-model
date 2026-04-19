@@ -1110,10 +1110,6 @@ def run_station(args_params: dict) -> None:
         tbl[(0, j)].set_text_props(weight="bold")
 
     fig_c.tight_layout()
-    # Caption goes in figure coords, below the table subplot — avoids overlap.
-    fig_c.text(0.02, 0.01, "* best by KGE_val",
-               fontsize=8, color="#555", ha="left", va="bottom")
-    fig_c.subplots_adjust(bottom=0.08)
     rklib_savefig(fig_c, compare_dir / f"gw_compare_{station_label}.png")
     plt.close(fig_c)
 
