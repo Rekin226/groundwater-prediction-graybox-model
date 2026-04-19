@@ -810,6 +810,16 @@ def _fit_model(
         print(f"  RMSE_val={rmse_val:.4f}  R²_val={r2_val:.4f}")
     print("========================================================\n")
 
+    # Pre-compute KGE for cal & val using the existing helper so downstream
+    # CSV writers and plotting share one source of truth.
+    m_cal = compute_metrics(h_obs_cal, y_fit_cal)
+    kge_cal = m_cal["kge"]
+    if has_val and y_fit_val is not None:
+        m_val = compute_metrics(h_obs[n_cal:], y_fit_val)
+        kge_val = m_val["kge"]
+    else:
+        kge_val = float("nan")
+
     # Build full-period y_fit for plotting (calibration only — validation plotted separately)
     return {
         "model": model_name,
@@ -820,6 +830,8 @@ def _fit_model(
         "r2": r2_cal,
         "rmse_val": rmse_val,
         "r2_val": r2_val,
+        "kge": kge_cal,
+        "kge_val": kge_val,
         "aic": aic,
         "y_fit": y_fit_cal,
         "y_fit_val": y_fit_val,
@@ -832,6 +844,9 @@ def _fit_model(
         "is_coastal": is_coastal,
         "time_index": time_index[:n_cal],
         "time_index_val": time_index[n_cal:] if has_val else None,
+        "h_obs_full": h_obs,
+        "n_cal": n_cal,
+        "time_index_full": time_index,
     }
 
 
