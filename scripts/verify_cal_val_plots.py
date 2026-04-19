@@ -6,10 +6,10 @@ before the full 61-station rerun.
 Usage:
     PYTHONPATH=../:srcs python scripts/verify_cal_val_plots.py
 
-Outputs (per station, 6 plots each):
-    workspace/results/final/figures/{base,filtered,base_tz,filtered_tz}/gw_fit_{st}.png
-    workspace/results/final/figures/comparison/gw_compare_{st}.png
-    workspace/results/final/figures/full_subplots/gw_fit_{st}.png
+Outputs (per station, 6 plots each; rklib_savefig normalizes the extension to .tiff):
+    workspace/results/final/figures/{base,filtered,base_tz,filtered_tz}/gw_fit_{st}.tiff
+    workspace/results/final/figures/comparison/gw_compare_{st}.tiff
+    workspace/results/final/figures/full_subplots/gw_fit_{st}.tiff
 """
 
 import sys
@@ -64,12 +64,12 @@ def main() -> None:
     for st_id in STATIONS:
         print(f"\nStation {st_id}:")
         checks = [
-            ("base",        OUTPUT_ROOT / "figures" / "base"          / f"gw_fit_{st_id}.png"),
-            ("filtered",    OUTPUT_ROOT / "figures" / "filtered"      / f"gw_fit_{st_id}.png"),
-            ("base_tz",     OUTPUT_ROOT / "figures" / "base_tz"       / f"gw_fit_{st_id}.png"),
-            ("filtered_tz", OUTPUT_ROOT / "figures" / "filtered_tz"   / f"gw_fit_{st_id}.png"),
-            ("comparison",  OUTPUT_ROOT / "figures" / "comparison"    / f"gw_compare_{st_id}.png"),
-            ("full",        OUTPUT_ROOT / "figures" / "full_subplots" / f"gw_fit_{st_id}.png"),
+            ("base",        OUTPUT_ROOT / "figures" / "base"          / f"gw_fit_{st_id}.tiff"),
+            ("filtered",    OUTPUT_ROOT / "figures" / "filtered"      / f"gw_fit_{st_id}.tiff"),
+            ("base_tz",     OUTPUT_ROOT / "figures" / "base_tz"       / f"gw_fit_{st_id}.tiff"),
+            ("filtered_tz", OUTPUT_ROOT / "figures" / "filtered_tz"   / f"gw_fit_{st_id}.tiff"),
+            ("comparison",  OUTPUT_ROOT / "figures" / "comparison"    / f"gw_compare_{st_id}.tiff"),
+            ("full",        OUTPUT_ROOT / "figures" / "full_subplots" / f"gw_fit_{st_id}.tiff"),
         ]
         for name, path in checks:
             mark = "✓" if path.exists() else "✗"
