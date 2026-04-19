@@ -9,6 +9,7 @@ from scipy.optimize import curve_fit, differential_evolution
 from sklearn.metrics import r2_score, mean_squared_error
 import jfft
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import gw_subroutine as sub
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -940,31 +941,77 @@ def run_station(args_params: dict) -> None:
     }
     setup_font()
 
-    # Per-variant plots
+    # Per-variant plots (publication-quality)
+    CAL_COLOR  = "#1a6faf"   # blue
+    VAL_COLOR  = "#c94040"   # red
+    SHADE_CAL  = "#2166ac"
+    SHADE_VAL  = "#d6604d"
+    METRIC_BOX = dict(boxstyle="round,pad=0.35", facecolor="white",
+                      edgecolor="#4d4d4d", linewidth=0.8, alpha=0.92)
+    SPLIT = pd.Timestamp("2019-01-01")
+
     for result in model_results:
         variant_dir = output_root / "figures" / result['model']
         variant_dir.mkdir(parents=True, exist_ok=True)
-        fig_v, ax_v = plt.subplots(figsize=(10, 5))
-        ax_v.plot(plot_index, result["h_obs"], color="black", linewidth=1.0, label="Observed")
-        ax_v.plot(plot_index, result["y_fit"],
-                  color=_variant_colors.get(result['model'], '#2980b9'),
-                  linewidth=1.5,
-                  label=f"{result['model']} (R²={result['r2']:.3f}, RMSE={result['rmse']:.3f})")
-        if result.get("y_fit_val") is not None and result.get("time_index_val") is not None:
-            ax_v.plot(result["time_index_val"], result["y_fit_val"],
-                      color='#d6604d', linewidth=1.5,
-                      label=f"val (R²={result['r2_val']:.3f})")
-            ax_v.axvline(x=result["time_index_val"][0], color="black",
-                         linestyle="--", linewidth=1.5, alpha=0.9)
-        ax_v.set_ylabel("Groundwater level (m)", fontsize=14, fontweight='bold')
-        ax_v.set_xlabel("Date", fontsize=14, fontweight='bold')
-        ax_v.tick_params(axis='both', which='major', labelsize=10)
-        ax_v.set_title(f"{station_label} | {result['model']} | {group_name}",
-                       fontsize=14, fontweight='bold')
-        ax_v.legend(fontsize=8)
-        ax_v.grid(True, alpha=0.3)
+
+        time_cal = result['time_index']
+        time_val = result.get('time_index_val')
+        time_full = result.get('time_index_full', time_cal)
+        h_obs_full = result.get('h_obs_full', result['h_obs'])
+
+        fig_v, ax_v = plt.subplots(figsize=(11, 5))
+
+        # Background shading cal/val
+        t_start = time_full[0]
+        t_end = time_full[-1] + pd.Timedelta(days=1)
+        ax_v.axvspan(t_start, SPLIT, color=SHADE_CAL, alpha=0.08, zorder=0)
+        ax_v.axvspan(SPLIT, t_end, color=SHADE_VAL, alpha=0.08, zorder=0)
+
+        # Observed across full period
+        ax_v.plot(time_full, h_obs_full, color="black", lw=1.0,
+                  alpha=0.9, label="Observed")
+        # Calibration simulation
+        ax_v.plot(time_cal, result['y_fit'], color=CAL_COLOR, lw=1.5,
+                  alpha=0.95, label="Calibration")
+        # Validation simulation
+        if result.get('y_fit_val') is not None and time_val is not None:
+            ax_v.plot(time_val, result['y_fit_val'], color=VAL_COLOR, lw=1.5,
+                      alpha=0.95, label="Validation")
+
+        # Split line
+        ax_v.axvline(SPLIT, color="black", ls="--", lw=1.5, alpha=0.9)
+
+        # Annotation boxes (KGE + RMSE)
+        kge_cal = result.get('kge', float('nan'))
+        rmse_cal = result['rmse']
+        ax_v.text(0.45, 0.05,
+                  f"Calibration\nKGE = {kge_cal:.2f}   RMSE = {rmse_cal:.2f} m",
+                  transform=ax_v.transAxes, fontsize=9, va="bottom", ha="center",
+                  color="black", bbox=METRIC_BOX)
+        if result.get('y_fit_val') is not None:
+            kge_val = result.get('kge_val', float('nan'))
+            rmse_val = result['rmse_val']
+            ax_v.text(0.9, 0.05,
+                      f"Validation\nKGE = {kge_val:.2f}   RMSE = {rmse_val:.2f} m",
+                      transform=ax_v.transAxes, fontsize=9, va="bottom", ha="center",
+                      color="black", bbox=METRIC_BOX)
+
+        # Axes, title, legend
+        ax_v.set_title(
+            f"Station {station_label} — {MODEL_LABELS[result['model']]} model ({group_name})",
+            fontsize=14, fontweight="bold", pad=6,
+        )
+        ax_v.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
+        ax_v.set_xlabel("Year", fontsize=12, fontweight="bold")
+        ax_v.xaxis.set_major_locator(mdates.YearLocator())
+        ax_v.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+        ax_v.tick_params(axis="both", labelsize=9)
+        ax_v.grid(True, lw=0.3, alpha=0.4)
+        ax_v.legend(fontsize=9, loc="upper right", framealpha=0.85)
+
         fig_v.tight_layout()
         rklib_savefig(fig_v, variant_dir / f"gw_fit_{station_label}.png")
+        plt.close(fig_v)
 
     # Comparison overlay plot (all variants on one figure)
     compare_dir = output_root / "figures" / "comparison"
