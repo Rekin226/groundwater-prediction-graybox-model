@@ -1013,28 +1013,94 @@ def run_station(args_params: dict) -> None:
         rklib_savefig(fig_v, variant_dir / f"gw_fit_{station_label}.png")
         plt.close(fig_v)
 
-    # Comparison overlay plot (all variants on one figure)
+    # Comparison overlay plot: cal (solid) + val (dashed) per variant,
+    # metrics table as a subplot below (spec §4.4).
     compare_dir = output_root / "figures" / "comparison"
     compare_dir.mkdir(parents=True, exist_ok=True)
-    fig_c, ax_c = plt.subplots(figsize=(10, 5))
-    ax_c.plot(plot_index, best_model["h_obs"], color="black", linewidth=1.0, label="Observed")
-    for result in sorted(model_results, key=lambda r: -r['r2_val']):
+
+    fig_c, (ax_ts, ax_tbl) = plt.subplots(
+        2, 1, figsize=(11, 7),
+        gridspec_kw={"height_ratios": [4, 1], "hspace": 0.35},
+    )
+
+    time_full = best_model.get('time_index_full', best_model['time_index'])
+    h_obs_full = best_model.get('h_obs_full', best_model['h_obs'])
+    t_start = time_full[0]
+    t_end = time_full[-1] + pd.Timedelta(days=1)
+
+    # Shading + observed
+    ax_ts.axvspan(t_start, SPLIT, color=SHADE_CAL, alpha=0.08, zorder=0)
+    ax_ts.axvspan(SPLIT, t_end, color=SHADE_VAL, alpha=0.08, zorder=0)
+    ax_ts.plot(time_full, h_obs_full, color="black", lw=1.3,
+               alpha=0.95, label="Observed", zorder=3)
+
+    # Variant lines (cal solid, val dashed)
+    variant_order = ["base", "filtered", "base_tz", "filtered_tz"]
+    for model_id in variant_order:
+        match = [r for r in model_results if r['model'] == model_id]
+        if not match:
+            continue
+        result = match[0]
         is_best = (result is best_model)
-        lw = 1.8 if is_best else 1.2
-        alpha = 1.0 if is_best else 0.7
-        star = " *" if is_best else ""
-        clr = _variant_colors.get(result['model'], '#2980b9')
-        ax_c.plot(plot_index, result["y_fit"], color=clr, linewidth=lw, alpha=alpha,
-                  label=f"{result['model']}{star} (R²_cal={result['r2']:.3f}, R²_val={result['r2_val']:.3f})")
-    ax_c.set_ylabel("Groundwater level (m)", fontsize=14, fontweight='bold')
-    ax_c.set_xlabel("Date", fontsize=14, fontweight='bold')
-    ax_c.tick_params(axis='both', which='major', labelsize=10)
-    ax_c.set_title(f"{station_label} ({group_name}) — Model Comparison  [best: {best_model['model']}]",
-                   fontsize=14, fontweight='bold')
-    ax_c.legend(fontsize=8)
-    ax_c.grid(True, alpha=0.3)
+        lw = 1.9 if is_best else 1.3
+        alpha = 1.0 if is_best else 0.75
+        clr = _variant_colors[model_id]
+        ax_ts.plot(result['time_index'], result['y_fit'],
+                   color=clr, lw=lw, alpha=alpha, ls="-",
+                   label=MODEL_LABELS[model_id])
+        if result.get('y_fit_val') is not None and result.get('time_index_val') is not None:
+            ax_ts.plot(result['time_index_val'], result['y_fit_val'],
+                       color=clr, lw=lw, alpha=alpha, ls="--")
+
+    ax_ts.axvline(SPLIT, color="black", ls="--", lw=1.5, alpha=0.9)
+    ax_ts.set_title(
+        f"Station {station_label} ({group_name}) — Model comparison",
+        fontsize=14, fontweight="bold", pad=6,
+    )
+    ax_ts.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
+    ax_ts.set_xlabel("Year", fontsize=12, fontweight="bold")
+    ax_ts.xaxis.set_major_locator(mdates.YearLocator())
+    ax_ts.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax_ts.tick_params(axis="both", labelsize=9)
+    ax_ts.grid(True, lw=0.3, alpha=0.4)
+    ax_ts.legend(fontsize=9, loc="upper right", framealpha=0.85, ncol=1)
+
+    # Metrics table
+    ax_tbl.axis("off")
+    col_labels = ["Model", "KGE_cal", "KGE_val", "RMSE_cal", "RMSE_val"]
+    table_rows = []
+    for model_id in variant_order:
+        match = [r for r in model_results if r['model'] == model_id]
+        if not match:
+            continue
+        result = match[0]
+        is_best = (result is best_model)
+        label = MODEL_LABELS[model_id] + (" *" if is_best else "")
+        rmse_val_str = (f"{result['rmse_val']:.2f}"
+                        if not np.isnan(result.get('rmse_val', np.nan)) else "—")
+        table_rows.append([
+            label,
+            f"{result.get('kge', float('nan')):.2f}",
+            f"{result.get('kge_val', float('nan')):.2f}",
+            f"{result['rmse']:.2f}",
+            rmse_val_str,
+        ])
+    tbl = ax_tbl.table(
+        cellText=table_rows, colLabels=col_labels,
+        loc="center", cellLoc="center",
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9)
+    tbl.scale(1.0, 1.3)
+    for j in range(len(col_labels)):
+        tbl[(0, j)].set_facecolor("#e8e8e8")
+        tbl[(0, j)].set_text_props(weight="bold")
+    ax_tbl.text(0.01, 0.05, "* best by KGE_val", transform=ax_tbl.transAxes,
+                fontsize=8, color="#555", ha="left", va="bottom")
+
     fig_c.tight_layout()
     rklib_savefig(fig_c, compare_dir / f"gw_compare_{station_label}.png")
+    plt.close(fig_c)
 
     # --- Best-model full multi-panel figure (existing style) ---
     fig_obj = TimeSeriesModelFig(
