@@ -1102,36 +1102,83 @@ def run_station(args_params: dict) -> None:
     rklib_savefig(fig_c, compare_dir / f"gw_compare_{station_label}.png")
     plt.close(fig_c)
 
-    # --- Best-model full multi-panel figure (existing style) ---
-    fig_obj = TimeSeriesModelFig(
-        time=plot_index,
-        observed=best_model["h_obs"],
-        predicted=best_model["y_fit"],
-        extra_panels=[
-            {'data': best_model["rainfall"], 'label': 'Rainfall', 'color': 'C0', 'ylabel': 'Rainfall(mm)'},
-            {'data': best_model["amp"],      'label': 'AMP',      'color': 'C2', 'ylabel': 'AMP (m)'},
-        ],
-        obs_ylabel="Groundwater level (m)",
-        figsize=(10, 8),
-        panel_labels=False,
-    )
-    fig, axes = fig_obj.plot()
-    fig.tight_layout(h_pad=3.0)
-    for line in axes[0].get_lines():
-        if line.get_label() == 'Predicted':
-            line.set_label(f"{best_model['model']} (RMSE={best_model['rmse']:.3f}, R²={best_model['r2']:.3f})")
-    axes[0].set_title(f"{station_label} ({group_name})", fontsize=14, fontweight='bold')
-    axes[2].set_title(f"AMP-{args.get('st_id', '')}", fontsize=14, fontweight='bold')
-    axes[1].clear()
-    axes[1].bar(plot_index, best_model["rainfall"], width=1.0, color="C0")
-    axes[1].set_ylabel("Rainfall(mm)")
-    axes[1].set_title(args.get('rf_id', ''), fontsize=14, fontweight='bold')
-    for ax, lbl in zip(axes, ['a', 'b', 'c']):
-        add_panel_label(ax, lbl, x=0.01, y=1.09)
-    _h, _l = axes[0].get_legend_handles_labels()
-    axes[0].legend(fontsize=7)
+    # --- Best-model 3-panel figure: GWL (cal/val styled), rainfall, tidal amp ---
     full_dir = output_root / "figures" / "full_subplots"
     full_dir.mkdir(parents=True, exist_ok=True)
+
+    time_best_full = best_model.get('time_index_full', best_model['time_index'])
+    h_obs_best_full = best_model.get('h_obs_full', best_model['h_obs'])
+    n_full = len(time_best_full)
+
+    def _pad_to_full(arr):
+        """Pad cal-only array with NaN to match full time range length."""
+        arr = np.asarray(arr, dtype=float)
+        if len(arr) >= n_full:
+            return arr[:n_full]
+        padded = np.full(n_full, np.nan)
+        padded[:len(arr)] = arr
+        return padded
+
+    fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True,
+                             gridspec_kw={"height_ratios": [2.5, 1, 1]})
+
+    # Panel (a): GWL — best model with cal/val convention
+    ax0 = axes[0]
+    t_start = time_best_full[0]
+    t_end = time_best_full[-1] + pd.Timedelta(days=1)
+    ax0.axvspan(t_start, SPLIT, color=SHADE_CAL, alpha=0.08, zorder=0)
+    ax0.axvspan(SPLIT, t_end, color=SHADE_VAL, alpha=0.08, zorder=0)
+    ax0.plot(time_best_full, h_obs_best_full, color="black", lw=1.0,
+             alpha=0.9, label="Observed")
+    ax0.plot(best_model['time_index'], best_model['y_fit'], color=CAL_COLOR,
+             lw=1.5, alpha=0.95, label="Calibration")
+    if best_model.get('y_fit_val') is not None and best_model.get('time_index_val') is not None:
+        ax0.plot(best_model['time_index_val'], best_model['y_fit_val'],
+                 color=VAL_COLOR, lw=1.5, alpha=0.95, label="Validation")
+    ax0.axvline(SPLIT, color="black", ls="--", lw=1.5, alpha=0.9)
+    ax0.text(0.45, 0.05,
+             f"Calibration\nKGE = {best_model.get('kge', float('nan')):.2f}   "
+             f"RMSE = {best_model['rmse']:.2f} m",
+             transform=ax0.transAxes, fontsize=9, va="bottom", ha="center",
+             color="black", bbox=METRIC_BOX)
+    if best_model.get('y_fit_val') is not None:
+        ax0.text(0.9, 0.05,
+                 f"Validation\nKGE = {best_model.get('kge_val', float('nan')):.2f}   "
+                 f"RMSE = {best_model['rmse_val']:.2f} m",
+                 transform=ax0.transAxes, fontsize=9, va="bottom", ha="center",
+                 color="black", bbox=METRIC_BOX)
+    ax0.set_title(
+        f"Station {station_label} — Best: {MODEL_LABELS[best_model['model']]} ({group_name})",
+        fontsize=14, fontweight="bold", pad=6,
+    )
+    ax0.set_ylabel("Groundwater level (m)", fontsize=12, fontweight="bold")
+    ax0.legend(fontsize=9, loc="upper right", framealpha=0.85)
+    ax0.grid(True, lw=0.3, alpha=0.4)
+
+    # Panel (b): Rainfall bars (padded to full period; cal-only data — val is NaN)
+    ax1 = axes[1]
+    rainfall_full = _pad_to_full(best_model['rainfall'])
+    ax1.bar(time_best_full, rainfall_full, width=1.0, color="C0", alpha=0.8)
+    ax1.set_title(f"Rainfall — {args.get('rf_id', '')}", fontsize=12, fontweight="bold")
+    ax1.set_ylabel("Rainfall (mm/day)", fontsize=11, fontweight="bold")
+    ax1.grid(True, lw=0.3, alpha=0.4)
+
+    # Panel (c): Tidal amplitude (padded; cal-only)
+    ax2 = axes[2]
+    amp_full = _pad_to_full(best_model['amp'])
+    ax2.plot(time_best_full, amp_full, color="C2", lw=1.0, alpha=0.85)
+    amp_label_id = args.get('gw_st', args.get('st_id', ''))
+    ax2.set_title(f"Tidal amplitude — {amp_label_id}", fontsize=12, fontweight="bold")
+    ax2.set_ylabel("Amplitude (m)", fontsize=11, fontweight="bold")
+    ax2.set_xlabel("Year", fontsize=12, fontweight="bold")
+    ax2.xaxis.set_major_locator(mdates.YearLocator())
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax2.grid(True, lw=0.3, alpha=0.4)
+
+    for ax, lbl in zip(axes, ['a', 'b', 'c']):
+        add_panel_label(ax, lbl, x=0.01, y=1.02)
+
+    fig.tight_layout(h_pad=1.5)
     rklib_savefig(fig, full_dir / f"gw_fit_{station_label}.png")
     plt.close(fig)
 
