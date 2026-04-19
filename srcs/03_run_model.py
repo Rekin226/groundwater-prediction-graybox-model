@@ -2,6 +2,11 @@ import sys
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
 
+# Ensure rklib (parent code_space dir) and srcs are importable
+_base = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_base / "srcs"))
+sys.path.insert(0, str(_base.parent))
+
 import pandas as pd
 
 import gw_shell
@@ -73,19 +78,31 @@ def merge_results(output_root: Path) -> None:
     df_all.to_csv(out_path, index=False)
     print(f"Merged {len(csv_files)} station result(s) → {out_path}")
 
+    # Also merge all-variants CSVs if they exist
+    all_variants_dir = output_root / "all_variants"
+    if all_variants_dir.exists():
+        av_files = sorted(all_variants_dir.glob("*.csv"))
+        if av_files:
+            av_frames = [pd.read_csv(f) for f in av_files]
+            df_av = pd.concat(av_frames, ignore_index=True)
+            av_path = output_root / "all_variants_results.csv"
+            df_av.to_csv(av_path, index=False)
+            print(f"Merged {len(av_files)} all-variants file(s) → {av_path}")
+
 
 def _run_single_station(task: tuple) -> None:
     """Worker function to run calibration for a single station via direct function call."""
-    row_dict, base_dir_str, output_root_str = task
+    row_dict, base_dir_str, output_root_str, models_str = task
     row = pd.Series(row_dict)
     args_dict = build_station_arguments(row)
     args_dict["output_root"] = output_root_str
+    args_dict["models"] = models_str
     station_label = args_dict.get('st_id', args_dict.get('gw_st', 'unknown'))
-    print(f"Running station st_id={station_label} group={args_dict['group_name']}")
+    print(f"Running station st_id={station_label} group={args_dict['group_name']} models={models_str}")
     gw_shell.run_station(args_dict)
 
 
-def run_group(group_name: str, df_group: pd.DataFrame, base_dir: Path, output_root: Path) -> None:
+def run_group(group_name: str, df_group: pd.DataFrame, base_dir: Path, output_root: Path, models: str = "base,filtered,base_tz,filtered_tz") -> None:
     # Ensure we only use rows for this group
     df_group = df_group.copy()
     df_group = df_group[df_group["group"] == group_name]
@@ -95,7 +112,7 @@ def run_group(group_name: str, df_group: pd.DataFrame, base_dir: Path, output_ro
         return
 
     tasks = [
-        (row.to_dict(), str(base_dir), str(output_root))
+        (row.to_dict(), str(base_dir), str(output_root), models)
         for _, row in df_group.iterrows()
     ]
 
@@ -129,6 +146,17 @@ def main():
         help="Tag for this run. Results are written to workspace/results/{run-id}/. "
              "Use 'optimized' when re-running with gray_box_input_optimized.csv.",
     )
+    parser.add_argument(
+        "--station",
+        default=None,
+        help="Run a specific station only (e.g. --station st14).",
+    )
+    parser.add_argument(
+        "--models",
+        default="base,filtered,base_tz,filtered_tz",
+        help="Comma-separated model variants to run (default: all 4). "
+             "Options: base, filtered, base_tz, filtered_tz.",
+    )
     args = parser.parse_args()
 
     base_dir = Path(__file__).resolve().parents[1]
@@ -146,6 +174,14 @@ def main():
         print("No active rows found in gray_box_input.csv")
         return
 
+    # Filter to specific station if requested
+    if args.station:
+        df_active = df_active[df_active["st_id"].astype(str) == args.station]
+        if df_active.empty:
+            print(f"Station '{args.station}' not found or not active.")
+            return
+        print(f"Running single station: {args.station}")
+
     # Skip stations that already have results unless --force is given
     if not args.force:
         per_station_dir = output_root / "per_station"
@@ -160,13 +196,16 @@ def main():
         merge_results(output_root)
         return
 
+    models = args.models
+    print(f"Models: {models}")
+
     groups_present = sorted(df_active["group"].unique().tolist())
     print(f"Active groups present: {groups_present}")
 
     for group_name in ["inland", "coastal"]:
         if group_name in groups_present:
             df_group = df_active[df_active["group"] == group_name]
-            run_group(group_name, df_group, base_dir, output_root)
+            run_group(group_name, df_group, base_dir, output_root, models=models)
 
     merge_results(output_root)
 

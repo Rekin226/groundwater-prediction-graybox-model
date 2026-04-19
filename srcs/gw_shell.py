@@ -11,7 +11,7 @@ import jfft
 import matplotlib.pyplot as plt
 import gw_subroutine as sub
 
-sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rklib import TimeSeriesModelFig, setup_font, savefig as rklib_savefig, add_panel_label
 
 
@@ -524,6 +524,28 @@ def _compute_aic(n: int, rmse: float, k: int) -> float:
     return n * np.log(rss / n) + 2.0 * k
 
 
+def compute_metrics(obs: np.ndarray, pred: np.ndarray) -> dict:
+    """Compute R², RMSE, KGE and its decomposition (r, alpha, beta), bias."""
+    obs = np.asarray(obs, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+
+    ss_res = np.sum((obs - pred) ** 2)
+    ss_tot = np.sum((obs - np.mean(obs)) ** 2)
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    rmse = float(np.sqrt(np.mean((obs - pred) ** 2)))
+    r = float(np.corrcoef(obs, pred)[0, 1]) if len(obs) > 1 else np.nan
+    alpha = float(np.std(pred) / np.std(obs)) if np.std(obs) > 0 else np.nan
+    beta = float(np.mean(pred) / np.mean(obs)) if np.mean(obs) != 0 else np.nan
+    kge = 1.0 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2)
+    bias = float(np.mean(pred) - np.mean(obs))
+
+    return {
+        "r2": float(r2), "rmse": rmse, "kge": float(kge),
+        "kge_r": float(r), "kge_alpha": float(alpha),
+        "kge_beta": float(beta), "bias": bias,
+    }
+
+
 def run_global_optimization(
     model_func,
     xdata: np.ndarray,
@@ -680,8 +702,46 @@ def _fit_model(
             base_p0 = np.array([a0, z0, b0, c0, k0, 0.2, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
             lower = list(lower) + [lambda_min] + seas_lower
             upper = list(upper) + [lambda_max] + seas_upper
+    elif model_name == "base_tz":
+        model_func = sub.gw_model_wrapper_tz
+        z1_lo, z1_hi = -2.0, 2.0
+        if is_coastal:
+            lower, upper = estimate_bounds_coastal(h_obs_cal, rain_cal, amp_cal, amt_cal, h_up_cal, no_upstream=no_upstream)
+            param_names = ["a", "z0", "z1", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "tau_rain", "tau_up", "d_sin", "d_cos"]
+            h_mean = float(np.mean(h_obs_cal))
+            base_p0 = np.array([a0, z0, 0.0, b0, c0, k0, 0.1, 0.1, h_mean, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
+            lower = [lower[0], lower[1], z1_lo] + list(lower[2:]) + seas_lower
+            upper = [upper[0], upper[1], z1_hi] + list(upper[2:]) + seas_upper
+        else:
+            lower, upper = estimate_bounds_inland(h_obs_cal, rain_cal, amp_cal, h_up_cal, no_upstream=no_upstream)
+            param_names = ["a", "z0", "z1", "b", "c", "k_link", "tau_rain", "tau_up", "d_sin", "d_cos"]
+            base_p0 = np.array([a0, z0, 0.0, b0, c0, k0, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
+            lower = [lower[0], lower[1], z1_lo] + list(lower[2:]) + seas_lower
+            upper = [upper[0], upper[1], z1_hi] + list(upper[2:]) + seas_upper
+
+    elif model_name == "filtered_tz":
+        model_func = sub.gw_model_wrapper_filtered_tz
+        z1_lo, z1_hi = -2.0, 2.0
+        lambda_min, lambda_max = _ensure_bounds_spread(0.01, 0.8, min_width=0.05)
+        if is_coastal:
+            lower, upper = estimate_bounds_coastal(h_obs_cal, rain_cal, amp_cal, amt_cal, h_up_cal, no_upstream=no_upstream)
+            param_names = ["a", "z0", "z1", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
+            h_mean = float(np.mean(h_obs_cal))
+            base_p0 = np.array([a0, z0, 0.0, b0, c0, k0, 0.1, 0.1, h_mean, 0.2, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
+            lower = [lower[0], lower[1], z1_lo] + list(lower[2:]) + [lambda_min] + seas_lower
+            upper = [upper[0], upper[1], z1_hi] + list(upper[2:]) + [lambda_max] + seas_upper
+        else:
+            lower, upper = estimate_bounds_inland(h_obs_cal, rain_cal, amp_cal, h_up_cal, no_upstream=no_upstream)
+            param_names = ["a", "z0", "z1", "b", "c", "k_link", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
+            base_p0 = np.array([a0, z0, 0.0, b0, c0, k0, 0.2, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
+            lower = [lower[0], lower[1], z1_lo] + list(lower[2:]) + [lambda_min] + seas_lower
+            upper = [upper[0], upper[1], z1_hi] + list(upper[2:]) + [lambda_max] + seas_upper
+
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
+
+    # --- For z(t) models, use absolute time indices ---
+    use_absolute_t = model_name.endswith("_tz")
 
     model_kwargs = dict(
         rainfall=rain_cal, amp=amp_cal,
@@ -715,13 +775,21 @@ def _fit_model(
     y_fit_val = None
     if has_val:
         try:
+            if use_absolute_t:
+                # z(t) models: predicted h0 (continuous simulation) + absolute time
+                h0_val = float(y_fit_cal[-1])
+                t_val = t[n_cal:]
+            else:
+                # constant-z models: observed h0 + relative time
+                h0_val = float(h_obs[n_cal])
+                t_val = t[n_cal:] - t[n_cal]
             val_kwargs = dict(
                 rainfall=rainfall[n_cal:], amp=amp[n_cal:],
                 amt=amt[n_cal:] if is_coastal else None,
-                h_up=h_up[n_cal:], h0=float(h_obs[n_cal]),
+                h_up=h_up[n_cal:], h0=h0_val,
                 is_coastal=is_coastal, doy=doy[n_cal:],
             )
-            y_fit_val = model_func(t[n_cal:] - t[n_cal], *best_popt, **val_kwargs)
+            y_fit_val = model_func(t_val, *best_popt, **val_kwargs)
             rmse_val = float(np.sqrt(mean_squared_error(h_obs[n_cal:], y_fit_val)))
             r2_val   = float(r2_score(h_obs[n_cal:], y_fit_val))
         except Exception as e:
@@ -812,8 +880,12 @@ def run_station(args_params: dict) -> None:
             max_lag=max_lag,
         )
 
+    # Configurable model variants (default: all 4)
+    models_arg = args.get("models", "base,filtered,base_tz,filtered_tz")
+    model_list = [m.strip() for m in models_arg.split(",")]
+
     model_results = []
-    for model_name in ["base", "filtered"]:
+    for model_name in model_list:
         result = _fit_model(
             df_merge,
             group_name=group_name,
@@ -829,14 +901,76 @@ def run_station(args_params: dict) -> None:
         print("No successful fit found for any model.")
         sys.exit(1)
 
-    # Select best model by AIC (lower = better complexity-adjusted fit)
-    best_model = min(model_results, key=lambda item: item["aic"])
+    # Select best model by validation R² (highest = best out-of-sample prediction).
+    # Falls back to AIC if no validation data is available.
+    has_any_val = any(not np.isnan(r.get("r2_val", np.nan)) for r in model_results)
+    if has_any_val:
+        best_model = max(model_results, key=lambda item: item.get("r2_val", -np.inf))
+    else:
+        best_model = min(model_results, key=lambda item: item["aic"])
 
-    # Plot observed vs predicted groundwater levels for this station
     station_label = args.get('st_id', args.get('gw_st', 'unknown'))
     plot_index = best_model["time_index"]
 
+    # --- Per-variant and comparison plots (rklib style) ---
+    _variant_colors = {
+        'base': '#2980b9',        # blue
+        'filtered': '#27ae60',    # green
+        'base_tz': '#e74c3c',     # red
+        'filtered_tz': '#f39c12', # orange
+    }
     setup_font()
+
+    # Per-variant plots
+    for result in model_results:
+        variant_dir = output_root / "figures" / result['model']
+        variant_dir.mkdir(parents=True, exist_ok=True)
+        fig_v, ax_v = plt.subplots(figsize=(10, 5))
+        ax_v.plot(plot_index, result["h_obs"], color="black", linewidth=1.0, label="Observed")
+        ax_v.plot(plot_index, result["y_fit"],
+                  color=_variant_colors.get(result['model'], '#2980b9'),
+                  linewidth=1.5,
+                  label=f"{result['model']} (R²={result['r2']:.3f}, RMSE={result['rmse']:.3f})")
+        if result.get("y_fit_val") is not None and result.get("time_index_val") is not None:
+            ax_v.plot(result["time_index_val"], result["y_fit_val"],
+                      color='#d6604d', linewidth=1.5,
+                      label=f"val (R²={result['r2_val']:.3f})")
+            ax_v.axvline(x=result["time_index_val"][0], color="black",
+                         linestyle="--", linewidth=1.5, alpha=0.9)
+        ax_v.set_ylabel("Groundwater level (m)", fontsize=14, fontweight='bold')
+        ax_v.set_xlabel("Date", fontsize=14, fontweight='bold')
+        ax_v.tick_params(axis='both', which='major', labelsize=10)
+        ax_v.set_title(f"{station_label} | {result['model']} | {group_name}",
+                       fontsize=14, fontweight='bold')
+        ax_v.legend(fontsize=8)
+        ax_v.grid(True, alpha=0.3)
+        fig_v.tight_layout()
+        rklib_savefig(fig_v, variant_dir / f"gw_fit_{station_label}.png")
+
+    # Comparison overlay plot (all variants on one figure)
+    compare_dir = output_root / "figures" / "comparison"
+    compare_dir.mkdir(parents=True, exist_ok=True)
+    fig_c, ax_c = plt.subplots(figsize=(10, 5))
+    ax_c.plot(plot_index, best_model["h_obs"], color="black", linewidth=1.0, label="Observed")
+    for result in sorted(model_results, key=lambda r: -r['r2_val']):
+        is_best = (result is best_model)
+        lw = 1.8 if is_best else 1.2
+        alpha = 1.0 if is_best else 0.7
+        star = " *" if is_best else ""
+        clr = _variant_colors.get(result['model'], '#2980b9')
+        ax_c.plot(plot_index, result["y_fit"], color=clr, linewidth=lw, alpha=alpha,
+                  label=f"{result['model']}{star} (R²_cal={result['r2']:.3f}, R²_val={result['r2_val']:.3f})")
+    ax_c.set_ylabel("Groundwater level (m)", fontsize=14, fontweight='bold')
+    ax_c.set_xlabel("Date", fontsize=14, fontweight='bold')
+    ax_c.tick_params(axis='both', which='major', labelsize=10)
+    ax_c.set_title(f"{station_label} ({group_name}) — Model Comparison  [best: {best_model['model']}]",
+                   fontsize=14, fontweight='bold')
+    ax_c.legend(fontsize=8)
+    ax_c.grid(True, alpha=0.3)
+    fig_c.tight_layout()
+    rklib_savefig(fig_c, compare_dir / f"gw_compare_{station_label}.png")
+
+    # --- Best-model full multi-panel figure (existing style) ---
     fig_obj = TimeSeriesModelFig(
         time=plot_index,
         observed=best_model["h_obs"],
@@ -850,83 +984,38 @@ def run_station(args_params: dict) -> None:
         panel_labels=False,
     )
     fig, axes = fig_obj.plot()
-    fig.tight_layout(h_pad=3.0)  # increase to add more vertical space between subplots
-
-    # Update best-model legend label and overlay other model fits
+    fig.tight_layout(h_pad=3.0)
     for line in axes[0].get_lines():
         if line.get_label() == 'Predicted':
             line.set_label(f"{best_model['model']} (RMSE={best_model['rmse']:.3f}, R²={best_model['r2']:.3f})")
-    for result in model_results:
-        if result is not best_model:
-            clr = '#FF6600' if result['model'] == 'filtered' else None
-            axes[0].plot(plot_index, result["y_fit"],
-                         label=f"{result['model']} (RMSE={result['rmse']:.3f}, R²={result['r2']:.3f})",
-                         linewidth=1.5, **({'color': clr} if clr else {}))
     axes[0].set_title(f"{station_label} ({group_name})", fontsize=14, fontweight='bold')
     axes[2].set_title(f"AMP-{args.get('st_id', '')}", fontsize=14, fontweight='bold')
-    _order = ['z_', 'Observed', 'base', 'filtered']
-    _h, _l = axes[0].get_legend_handles_labels()
-    _paired = sorted(zip(_l, _h), key=lambda x: next((i for i, k in enumerate(_order) if k in x[0]), len(_order)))
-    if _paired:
-        _ls, _hs = zip(*_paired)
-        axes[0].legend(_hs, _ls, fontsize=7)
-    else:
-        axes[0].legend(fontsize=7)
-
-    # Redraw rainfall as bar chart (TimeSeriesModelFig uses lines for extra panels)
     axes[1].clear()
     axes[1].bar(plot_index, best_model["rainfall"], width=1.0, color="C0")
     axes[1].set_ylabel("Rainfall(mm)")
     axes[1].set_title(args.get('rf_id', ''), fontsize=14, fontweight='bold')
-
-    # Add panel labels last so nothing overwrites them.
-    # Adjust x, y (axes fraction: 0=left/bottom, 1=right/top) to move labels.
     for ax, lbl in zip(axes, ['a', 'b', 'c']):
         add_panel_label(ax, lbl, x=0.01, y=1.09)
-
-    # Save full multi-panel figure
+    _h, _l = axes[0].get_legend_handles_labels()
+    axes[0].legend(fontsize=7)
     full_dir = output_root / "figures" / "full_subplots"
     full_dir.mkdir(parents=True, exist_ok=True)
     rklib_savefig(fig, full_dir / f"gw_fit_{station_label}.png")
     plt.close(fig)
 
-    # Save GWL-only figure (observed vs predicted, no extra panels)
-    best_z = dict(zip(best_model['param_names'], best_model['params'])).get('z')
-    gw_fit_dir = output_root / "figures" / "gw_fit"
-    gw_fit_dir.mkdir(parents=True, exist_ok=True)
-    fig_gw, axes_gw = TimeSeriesModelFig(
-        time=plot_index,
-        observed=best_model["h_obs"],
-        predicted=best_model["y_fit"],
-        obs_ylabel="Groundwater level (m)",
-        baseline=best_z,
-        panel_labels=False,
-        figsize=(10, 5),
-    ).plot()
-    for line in axes_gw[0].get_lines():
-        if line.get_label() == 'Predicted':
-            line.set_label(f"{best_model['model']} (RMSE={best_model['rmse']:.3f}, R²={best_model['r2']:.3f})")
-    for result in model_results:
-        if result is not best_model:
-            clr = '#FF6600' if result['model'] == 'filtered' else None
-            axes_gw[0].plot(plot_index, result["y_fit"],
-                            label=f"{result['model']} (RMSE={result['rmse']:.3f}, R²={result['r2']:.3f})",
-                            linewidth=1.5, **({'color': clr} if clr else {}))
-    axes_gw[0].set_title(f"{station_label} ({group_name})", fontsize=14, fontweight='bold')
-    _order = ['z_', 'Observed', 'base', 'filtered']
-    _h, _l = axes_gw[0].get_legend_handles_labels()
-    _paired = sorted(zip(_l, _h), key=lambda x: next((i for i, k in enumerate(_order) if k in x[0]), len(_order)))
-    if _paired:
-        _ls, _hs = zip(*_paired)
-        axes_gw[0].legend(_hs, _ls, fontsize=7)
-    else:
-        axes_gw[0].legend(fontsize=7)
-    rklib_savefig(fig_gw, gw_fit_dir / f"gw_fit_{station_label}.png")
-    plt.close(fig_gw)
-
-    # Build results dict — written to a per-station file to avoid concurrent-write race conditions.
-    # 03_run_model.py merges all per-station files into gw_fit_results.csv after the pool finishes.
+    # --- Save results with KGE metrics ---
     station_label_key = args.get('st_id', args.get('gw_st', 'unknown'))
+
+    # Compute KGE for best model
+    m_cal = compute_metrics(best_model['h_obs'], best_model['y_fit'])
+    m_val = {"kge": np.nan, "kge_r": np.nan, "kge_alpha": np.nan, "kge_beta": np.nan, "bias": np.nan}
+    if best_model.get('y_fit_val') is not None and best_model.get('time_index_val') is not None:
+        n_cal_idx = len(best_model['time_index'])
+        h_obs_full = best_model.get('_h_obs_full')  # set below if available
+        if h_obs_full is not None:
+            m_val = compute_metrics(h_obs_full[n_cal_idx:], best_model['y_fit_val'])
+
+    # Best-variant results (main output)
     results = {
         'st_id': station_label_key,
         'gw_st': args.get('gw_st'),
@@ -938,19 +1027,44 @@ def run_station(args_params: dict) -> None:
         'model': best_model['model'],
         'rmse': best_model['rmse'],
         'r2': best_model['r2'],
+        'kge': m_cal['kge'],
         'rmse_val': best_model['rmse_val'],
         'r2_val': best_model['r2_val'],
+        'kge_val': m_val['kge'],
+        'kge_r_val': m_val['kge_r'],
+        'kge_alpha_val': m_val['kge_alpha'],
+        'kge_beta_val': m_val['kge_beta'],
+        'bias_val': m_val['bias'],
         'aic': best_model['aic'],
     }
     for name, val in zip(best_model['param_names'], best_model['params']):
         results[name] = float(val)
     for name, std in best_model['param_std'].items():
-        results[name] = std  # e.g. 'a_std', 'b_std', …
+        results[name] = std
 
     per_station_dir = output_root / "per_station"
     per_station_dir.mkdir(parents=True, exist_ok=True)
     per_station_path = per_station_dir / f"{station_label_key}.csv"
     pd.DataFrame([results]).to_csv(per_station_path, index=False)
+
+    # All-variants results with KGE (for analysis/comparison)
+    all_variant_rows = []
+    for result in model_results:
+        mc = compute_metrics(result['h_obs'], result['y_fit'])
+        row = {
+            'st_id': station_label_key, 'model': result['model'],
+            'r2': result['r2'], 'rmse': result['rmse'],
+            'kge': mc['kge'], 'kge_r': mc['kge_r'],
+            'r2_val': result['r2_val'], 'rmse_val': result['rmse_val'],
+            'aic': result['aic'],
+        }
+        for name, val in zip(result['param_names'], result['params']):
+            row[name] = float(val)
+        all_variant_rows.append(row)
+    all_variants_dir = output_root / "all_variants"
+    all_variants_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(all_variant_rows).to_csv(all_variants_dir / f"{station_label_key}.csv", index=False)
+
     print(f"Per-station results saved → {per_station_path}")
 
 

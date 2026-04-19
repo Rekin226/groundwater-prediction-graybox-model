@@ -1,25 +1,34 @@
 PYTHON := poetry run python
 RUN_ID ?= initial
+STATION ?=
+MODELS ?= base,filtered,base_tz,filtered_tz
 
 .PHONY: all run run-optimized run-optimized-low-r2 run-optimized-all \
+        run-station run-tz run-classic compare \
         step1 step2 step3 step4 step5 step6 \
         diagnostics maps clean activate-all deactivate-all activate-low-r2 activate-all-optimized help
 
 # ── Default target ────────────────────────────────────────────────────────────
 help:
-	@echo "Usage: make <target> [RUN_ID=initial]"
+	@echo "Usage: make <target> [RUN_ID=initial] [STATION=st14] [MODELS=base,filtered]"
 	@echo ""
 	@echo "Full pipeline:"
 	@echo "  all             Steps 1–6 with initial pairings"
-	@echo "  run             Steps 3–6 only (skip data prep and pairing)"
+	@echo "  run             Steps 3–6 (all 4 model variants: base, filtered, base_tz, filtered_tz)"
+	@echo "  run-classic     Run with constant-z only (base + filtered)"
+	@echo "  run-tz          Run with z(t) only (base_tz + filtered_tz)"
+	@echo "  run-station     Run a single station: make run-station STATION=st14"
 	@echo "  run-optimized         Re-run model + maps with optimized pairings"
 	@echo "  run-optimized-low-r2  Same, but only for stations with r2 < 0.5 in initial run"
 	@echo "  run-optimized-all     Re-run all stations with optimized pairings"
 	@echo ""
+	@echo "Model comparison:"
+	@echo "  compare         Compare constant-z vs z(t) results across all stations"
+	@echo ""
 	@echo "Individual steps:"
 	@echo "  step1           Prepare raw data"
 	@echo "  step2           Pair stations, classify coastal/inland"
-	@echo "  step3           Calibrate model  (honours RUN_ID, resumes by default)"
+	@echo "  step3           Calibrate model  (honours RUN_ID, MODELS, STATION)"
 	@echo "  step4           Pairing search for low-R² stations"
 	@echo "  step5           Diagnostics report"
 	@echo "  step6           Performance maps  (honours RUN_ID)"
@@ -30,19 +39,50 @@ help:
 	@echo "  clean           Remove workspace/results/RUN_ID"
 	@echo "  activate-all      Set active=1 for all stations in data/gray_box_input.csv"
 	@echo "  deactivate-all    Set active=0 for all stations in data/gray_box_input.csv"
-	@echo "  activate-low-r2       Set active=1 only for r2<0.5 stations (initial) in gray_box_input_optimized.csv"
-	@echo "  activate-all-optimized  Set active=1 for all stations in gray_box_input_optimized.csv"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make run"
-	@echo "  make run-optimized"
-	@echo "  make step3 RUN_ID=test"
+	@echo "  make run                                    # all stations, all 4 models"
+	@echo "  make run-station STATION=st14               # single station, all 4 models"
+	@echo "  make run-station STATION=st14 MODELS=base_tz  # single station, one model"
+	@echo "  make run-tz RUN_ID=tz_test                  # all stations, z(t) only"
+	@echo "  make run-classic RUN_ID=classic              # all stations, constant-z only"
+	@echo "  make compare                                 # compare results"
 	@echo "  make clean RUN_ID=test"
 
 # ── Pipeline shortcuts ─────────────────────────────────────────────────────────
 all: step1 step2 step3 step4 step5 step6
 
 run: step3 step4 step5 step6
+
+run-classic:
+	$(PYTHON) srcs/03_run_model.py --run-id $(RUN_ID) --models base,filtered --force
+
+run-tz:
+	$(PYTHON) srcs/03_run_model.py --run-id $(RUN_ID) --models base_tz,filtered_tz --force
+
+run-station:
+ifndef STATION
+	$(error STATION is required. Usage: make run-station STATION=st14)
+endif
+	$(PYTHON) srcs/03_run_model.py --run-id $(RUN_ID) --station $(STATION) --models $(MODELS) --force
+
+compare:
+	@$(PYTHON) -c "\
+	import pandas as pd, numpy as np; \
+	f = 'workspace/results/$(RUN_ID)/gw_fit_results.csv'; \
+	df = pd.read_csv(f); \
+	print(f'Results from {f}'); \
+	print(f'Stations: {len(df)}'); \
+	print(f'Models used: {df.model.value_counts().to_dict()}'); \
+	print(f'Median val R2: {df.r2_val.median():.3f}'); \
+	print(f'Positive val R2: {(df.r2_val > 0).sum()}/{len(df)}'); \
+	print(f'Good (R2>=0.7): {(df.r2_val >= 0.7).sum()}'); \
+	print(f'Medium (0.5-0.7): {((df.r2_val >= 0.5) & (df.r2_val < 0.7)).sum()}'); \
+	print(f'Low (<0.5): {(df.r2_val < 0.5).sum()}'); \
+	tz = df[df.model.str.contains('_tz', na=False)]; \
+	cz = df[~df.model.str.contains('_tz', na=False)]; \
+	print(f'Selected z(t): {len(tz)}, Selected constant-z: {len(cz)}'); \
+	"
 
 run-optimized:
 	$(PYTHON) srcs/03_run_model.py \
@@ -72,7 +112,7 @@ step2:
 	$(PYTHON) srcs/02_pairing.py
 
 step3:
-	$(PYTHON) srcs/03_run_model.py --run-id $(RUN_ID)
+	$(PYTHON) srcs/03_run_model.py --run-id $(RUN_ID) --models $(MODELS) $(if $(STATION),--station $(STATION),)
 
 step4:
 	$(PYTHON) srcs/04_diag_pairing_search.py --run-id $(RUN_ID)

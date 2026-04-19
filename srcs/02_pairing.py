@@ -14,7 +14,7 @@ from shapely.geometry import Point
 from pyproj import CRS, Transformer
 from matplotlib.animation import FuncAnimation, PillowWriter
 
-sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from rklib import StationMapFig, NorthArrow, ScaleBar, setup_font, savefig as rklib_savefig
 
 _BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

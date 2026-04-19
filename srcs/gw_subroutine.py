@@ -188,6 +188,191 @@ def simulate_coastal_filtered(
 
 
 ###############################################################################
+# Time-varying z variants: z(t) = z0 + z1 * (t / 365.25)
+# z1 is in m/year.  t must carry *absolute* day indices so that
+# validation segments continue the trend learned during training.
+###############################################################################
+
+
+def simulate_inland_tz(
+	params: Tuple[float, float, float, float, float, float, float, float, float, float],
+	t: np.ndarray,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	h_up: np.ndarray,
+	h0: float,
+	doy: Optional[np.ndarray] = None,
+) -> np.ndarray:
+	# Inland ODE with time-varying equilibrium (dt=1):
+	#   z_t = z0 + z1 * (t / 365.25)
+	#   h[t+1] = h[t] + [-a*(h[t] - z_t) + b*R[t] - c*AMP[t] + k_link*(h_up[t] - h[t])]
+	#            + d_sin*sin(2π*DOY/365.25) + d_cos*cos(2π*DOY/365.25)
+	a, z0, z1, b, c, k_link, tau_rain, tau_up, d_sin, d_cos = params
+	n = len(t)
+	h = np.zeros(n, dtype=float)
+	h[0] = h0
+	max_lag = min(90, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	_doy = doy if doy is not None else np.ones(n) * 180.0
+	t_f = t.astype(float)
+	for i in range(1, n):
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
+		h_prev = h[i - 1]
+		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
+		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
+		h[i] = h_prev + (
+			-a * (h_prev - z_t)
+			+ b * r_eff
+			- c * amp[i - 1]
+			+ k_link * (h_up_eff - h_prev)
+			+ d_sin * np.sin(angle)
+			+ d_cos * np.cos(angle)
+		)
+	return h
+
+
+def simulate_coastal_tz(
+	params: Tuple[float, float, float, float, float, float, float, float, float, float, float, float, float],
+	t: np.ndarray,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	amt: np.ndarray,
+	h_up: np.ndarray,
+	h0: float,
+	doy: Optional[np.ndarray] = None,
+) -> np.ndarray:
+	# Coastal ODE with time-varying equilibrium (dt=1):
+	#   z_t = z0 + z1 * (t / 365.25)
+	a, z0, z1, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up, d_sin, d_cos = params
+	n = len(t)
+	h = np.zeros(n, dtype=float)
+	h[0] = h0
+	max_lag = min(90, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	_doy = doy if doy is not None else np.ones(n) * 180.0
+	t_f = t.astype(float)
+	for i in range(1, n):
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
+		h_prev = h[i - 1]
+		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
+		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
+		h[i] = h_prev + (
+			-a * (h_prev - z_t)
+			+ b * r_eff
+			- c * amp[i - 1]
+			+ k_link * (h_up_eff - h_prev)
+			- k_sgd * (h_prev - h_sea)
+			+ gamma * amt[i - 1]
+			+ d_sin * np.sin(angle)
+			+ d_cos * np.cos(angle)
+		)
+	return h
+
+
+def simulate_inland_filtered_tz(
+	params: Tuple[float, float, float, float, float, float, float, float, float, float, float],
+	t: np.ndarray,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	h_up: np.ndarray,
+	h0: float,
+	doy: Optional[np.ndarray] = None,
+) -> np.ndarray:
+	# Inland ODE with low-pass filtered upstream + time-varying z (dt=1)
+	a, z0, z1, b, c, k_link, lam, tau_rain, tau_up, d_sin, d_cos = params
+	n = len(t)
+	h = np.zeros(n, dtype=float)
+	h[0] = h0
+	max_lag = min(90, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	u = float(h_up[0]) if len(h_up) > 0 else 0.0
+	_doy = doy if doy is not None else np.ones(n) * 180.0
+	t_f = t.astype(float)
+	for i in range(1, n):
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
+		h_prev = h[i - 1]
+		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
+		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
+		h[i] = h_prev + (
+			-a * (h_prev - z_t)
+			+ b * r_eff
+			- c * amp[i - 1]
+			+ k_link * (u - h_prev)
+			+ d_sin * np.sin(angle)
+			+ d_cos * np.cos(angle)
+		)
+		u = (1.0 - lam) * u + lam * h_up_eff
+	return h
+
+
+def simulate_coastal_filtered_tz(
+	params: Tuple[float, float, float, float, float, float, float, float, float, float, float, float, float, float],
+	t: np.ndarray,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	amt: np.ndarray,
+	h_up: np.ndarray,
+	h0: float,
+	doy: Optional[np.ndarray] = None,
+) -> np.ndarray:
+	# Coastal ODE with low-pass filtered upstream + time-varying z (dt=1)
+	a, z0, z1, b, c, k_link, k_sgd, gamma, h_sea, lam, tau_rain, tau_up, d_sin, d_cos = params
+	n = len(t)
+	h = np.zeros(n, dtype=float)
+	h[0] = h0
+	max_lag = min(90, n - 1)
+	if max_lag < 0:
+		return h
+	lag_idx = np.arange(max_lag + 1, dtype=float)
+	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
+	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
+	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
+	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	u = float(h_up[0]) if len(h_up) > 0 else 0.0
+	_doy = doy if doy is not None else np.ones(n) * 180.0
+	t_f = t.astype(float)
+	for i in range(1, n):
+		r_eff    = r_conv[i - 1]
+		h_up_eff = h_up_conv[i - 1]
+		h_prev = h[i - 1]
+		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
+		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
+		h[i] = h_prev + (
+			-a * (h_prev - z_t)
+			+ b * r_eff
+			- c * amp[i - 1]
+			+ k_link * (u - h_prev)
+			- k_sgd * (h_prev - h_sea)
+			+ gamma * amt[i - 1]
+			+ d_sin * np.sin(angle)
+			+ d_cos * np.cos(angle)
+		)
+		u = (1.0 - lam) * u + lam * h_up_eff
+	return h
+
+
+###############################################################################
 # Define a wrapper that curve_fit will call
 ###############################################################################
 def gw_model_wrapper(
@@ -274,6 +459,99 @@ def gw_model_wrapper_filtered(
 		)
 	else:
 		return simulate_inland_filtered(
+			params=params,  # type: ignore[arg-type]
+			t=t,
+			rainfall=rainfall,
+			amp=amp,
+			h_up=h_up,
+			h0=h0,
+			doy=doy,
+		)
+
+
+def gw_model_wrapper_tz(
+	t: np.ndarray,
+	*params: float,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	amt: Optional[np.ndarray],
+	h_up: np.ndarray,
+	h0: float,
+	is_coastal: bool,
+	doy: Optional[np.ndarray] = None,
+) -> np.ndarray:
+	"""Wrapper for the optimizer (time-varying z variant).
+
+	IMPORTANT: t must carry absolute day indices (not reset to 0 for
+	validation) so that z(t) = z0 + z1*(t/365.25) continues correctly.
+
+	Parameters
+	----------
+	t : np.ndarray
+		Absolute time index (day number from record start).
+	*params : float
+		Inland:  (a, z0, z1, b, c, k_link, tau_rain, tau_up, d_sin, d_cos).
+		Coastal: (a, z0, z1, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up, d_sin, d_cos).
+	"""
+	if is_coastal:
+		return simulate_coastal_tz(
+			params=params,  # type: ignore[arg-type]
+			t=t,
+			rainfall=rainfall,
+			amp=amp,
+			amt=amt if amt is not None else np.zeros_like(t),
+			h_up=h_up,
+			h0=h0,
+			doy=doy,
+		)
+	else:
+		return simulate_inland_tz(
+			params=params,  # type: ignore[arg-type]
+			t=t,
+			rainfall=rainfall,
+			amp=amp,
+			h_up=h_up,
+			h0=h0,
+			doy=doy,
+		)
+
+
+def gw_model_wrapper_filtered_tz(
+	t: np.ndarray,
+	*params: float,
+	rainfall: np.ndarray,
+	amp: np.ndarray,
+	amt: Optional[np.ndarray],
+	h_up: np.ndarray,
+	h0: float,
+	is_coastal: bool,
+	doy: Optional[np.ndarray] = None,
+) -> np.ndarray:
+	"""Wrapper for the optimizer (filtered-upstream + time-varying z).
+
+	IMPORTANT: t must carry absolute day indices.
+
+	Parameters
+	----------
+	t : np.ndarray
+		Absolute time index (day number from record start).
+	*params : float
+		Inland:  (a, z0, z1, b, c, k_link, lambda, tau_rain, tau_up, d_sin, d_cos).
+		Coastal: (a, z0, z1, b, c, k_link, k_sgd, gamma, h_sea, lambda, tau_rain, tau_up, d_sin, d_cos).
+	"""
+	if is_coastal:
+		return simulate_coastal_filtered_tz(
+			params=params,  # type: ignore[arg-type]
+			t=t,
+			rainfall=rainfall,
+			amp=amp,
+			amt=amt if amt is not None else np.zeros_like(t),
+			h_up=h_up,
+			h0=h0,
+			doy=doy,
+		)
+	else:
+		return simulate_inland_filtered_tz(
 			params=params,  # type: ignore[arg-type]
 			t=t,
 			rainfall=rainfall,

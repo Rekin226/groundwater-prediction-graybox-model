@@ -28,7 +28,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import pandas as pd
 
-sys.path.insert(0, '/Users/rekin226/Desktop/Postdoc/code_space')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rklib import NorthArrow, ScaleBar, setup_font, savefig as rklib_savefig
 
 
