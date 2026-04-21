@@ -13,6 +13,9 @@
 /workspace/*
 !/workspace/.gitkeep
 
+# Scratch / experimental runs — not for commit
+/test_neg_val/
+
 /.github/
 
 # -----------------------------
