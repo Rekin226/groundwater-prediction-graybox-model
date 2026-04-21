@@ -1,8 +1,13 @@
 import argparse
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
+
+_base = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_base / "srcs"))
+sys.path.insert(0, str(_base.parent))
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,10 +25,12 @@ class FitOutcome:
     model: str
     rmse: float
     r2: float
+    kge: float
     rain_lag_days: int
     up_lag_days: int
     r2_val: float = float("nan")
     rmse_val: float = float("nan")
+    kge_val: float = float("nan")
 
 
 def _corr_abs(x: np.ndarray, y: np.ndarray) -> float:
@@ -157,7 +164,7 @@ def fit_combo(
         up_lag = gw_shell.estimate_upstream_lag(h_obs, df_merge["ups_gwl"].values, max_lag=max_lag)
 
     results = []
-    for model_name in ["base", "filtered"]:
+    for model_name in ["base", "filtered", "base_tz", "filtered_tz"]:
         r = gw_shell._fit_model(
             df_merge,
             group_name=group_name,
@@ -173,7 +180,7 @@ def fit_combo(
     if not results:
         raise RuntimeError("No successful fit for any model")
 
-    best = min(results, key=lambda item: item["aic"])
+    best = max(results, key=lambda item: item.get("kge_val", -np.inf))
     return FitOutcome(
         st_id=st_id,
         rf_id=str(rf_id),
@@ -182,10 +189,12 @@ def fit_combo(
         model=str(best["model"]),
         rmse=float(best["rmse"]),
         r2=float(best["r2"]),
+        kge=float(best.get("kge", float("nan"))),
         rain_lag_days=int(rain_lag),
         up_lag_days=int(up_lag),
         r2_val=float(best.get("r2_val", float("nan"))),
         rmse_val=float(best.get("rmse_val", float("nan"))),
+        kge_val=float(best.get("kge_val", float("nan"))),
     )
 
 
@@ -245,17 +254,17 @@ def rank_ups_candidates(
 
 
 def _select_metric(outcome: FitOutcome) -> float:
-    """Return the metric to maximise during search. Prefer r2_val when valid."""
-    if np.isfinite(outcome.r2_val):
-        return outcome.r2_val
-    return outcome.r2
+    """Return the metric to maximise during search. Prefer kge_val when valid."""
+    if np.isfinite(outcome.kge_val):
+        return outcome.kge_val
+    return outcome.kge
 
 
 def _apply_improvements(
     input_csv: Path,
     summary_rows: list,
     out_csv: Path,
-    min_delta_r2: float = 0.02,
+    min_delta_kge: float = 0.02,
 ) -> pd.DataFrame:
     """Write gray_box_input_optimized.csv with improved pairings applied for qualifying stations."""
     df = pd.read_csv(input_csv)
@@ -263,16 +272,16 @@ def _apply_improvements(
 
     applied = 0
     for row in summary_rows:
-        # Prefer delta_r2_val (validation improvement) as the gate; fall back to delta_r2.
-        delta_val = row.get("delta_r2_val")
-        delta_train = row.get("delta_r2")
+        # Prefer delta_kge_val (validation improvement) as the gate; fall back to delta_kge.
+        delta_val = row.get("delta_kge_val")
+        delta_train = row.get("delta_kge")
         if delta_val is not None and np.isfinite(float(delta_val)):
             delta = float(delta_val)
         elif delta_train is not None and np.isfinite(float(delta_train)):
             delta = float(delta_train)
         else:
             continue
-        if delta < min_delta_r2:
+        if delta < min_delta_kge:
             continue
         mask = df["st_id"] == str(row["st_id"])
         if not mask.any():
@@ -364,7 +373,7 @@ def main() -> int:
     parser.add_argument("--fit-results", default=None,
                         help="Path to gw_fit_results.csv. Defaults to workspace/results/{run-id}/gw_fit_results.csv.")
     parser.add_argument("--gray-box-input", default="data/gray_box_input.csv")
-    parser.add_argument("--r2-threshold", type=float, default=0.5)
+    parser.add_argument("--kge-threshold", type=float, default=0.5)
     parser.add_argument("--max-lag", type=int, default=45)
     parser.add_argument("--top-k-rf", type=int, default=2)
     parser.add_argument("--top-k-ups", type=int, default=2)
@@ -375,7 +384,7 @@ def main() -> int:
     parser.add_argument("--output-optimized", default="data/gray_box_input_optimized.csv",
                         help="Path to write improved gray_box_input with optimized pairings applied.")
     parser.add_argument("--min-improvement", type=float, default=0.02,
-                        help="Minimum delta_r2 required to apply a new pairing to the optimized CSV.")
+                        help="Minimum delta_kge required to apply a new pairing to the optimized CSV.")
 
     args = parser.parse_args()
 
@@ -396,11 +405,11 @@ def main() -> int:
 
     rf_daily = pd.read_csv(gw_shell.RF_DATA_PATH, parse_dates=["date time"]).rename(columns=str).set_index("date time")
 
-    # Identify low training-R² stations — pairing changes can only fix poor fit,
+    # Identify low-KGE stations — pairing changes can only fix poor fit,
     # not train/val generalisation gaps (which are a model-structure problem).
-    fit_df["r2"] = pd.to_numeric(fit_df.get("r2"), errors="coerce")
-    fit_df["r2_val"] = pd.to_numeric(fit_df.get("r2_val"), errors="coerce")
-    low = fit_df[fit_df["r2"].notna() & (fit_df["r2"] < args.r2_threshold)].copy()
+    fit_df["kge"] = pd.to_numeric(fit_df.get("kge"), errors="coerce")
+    fit_df["kge_val"] = pd.to_numeric(fit_df.get("kge_val"), errors="coerce")
+    low = fit_df[fit_df["kge"].notna() & (fit_df["kge"] < args.kge_threshold)].copy()
 
     # Merge group/inputs
     input_df["st_id"] = input_df["st_id"].astype(str)
@@ -444,7 +453,7 @@ def main() -> int:
         current_ups = baseline_ups
 
         # Use stored fit results as baseline — avoids optimizer noise from a fresh re-fit
-        # which could corrupt the delta_r2 comparison.
+        # which could corrupt the delta_kge comparison.
         baseline = FitOutcome(
             st_id=st_id,
             rf_id=current_rf,
@@ -453,10 +462,12 @@ def main() -> int:
             model=str(row.get("model", "")),
             rmse=float(row.get("rmse", np.nan)),
             r2=float(row.get("r2", np.nan)),
+            kge=float(row.get("kge", np.nan)) if pd.notna(row.get("kge", np.nan)) else float("nan"),
             rain_lag_days=int(row.get("rain_lag_days", 0) if pd.notna(row.get("rain_lag_days", 0)) else 0),
             up_lag_days=int(row.get("up_lag_days", 0) if pd.notna(row.get("up_lag_days", 0)) else 0),
             r2_val=float(row.get("r2_val", np.nan)) if pd.notna(row.get("r2_val", np.nan)) else float("nan"),
             rmse_val=float(row.get("rmse_val", np.nan)) if pd.notna(row.get("rmse_val", np.nan)) else float("nan"),
+            kge_val=float(row.get("kge_val", np.nan)) if pd.notna(row.get("kge_val", np.nan)) else float("nan"),
         )
 
         best_overall = baseline
@@ -549,17 +560,17 @@ def main() -> int:
             "baseline_ups": baseline.ups_id,
             "baseline_model": baseline.model,
             "baseline_rmse": baseline.rmse,
-            "baseline_r2": baseline.r2,
-            "baseline_r2_val": baseline.r2_val,
+            "baseline_kge": baseline.kge,
+            "baseline_kge_val": baseline.kge_val,
             "best_rf": best_overall.rf_id,
             "best_ups": best_overall.ups_id,
             "best_model": best_overall.model,
             "best_rmse": best_overall.rmse,
-            "best_r2": best_overall.r2,
-            "best_r2_val": best_overall.r2_val,
-            "delta_r2": (best_overall.r2 - baseline.r2) if np.isfinite(baseline.r2) else np.nan,
-            "delta_r2_val": (best_overall.r2_val - baseline.r2_val)
-                if np.isfinite(baseline.r2_val) and np.isfinite(best_overall.r2_val) else np.nan,
+            "best_kge": best_overall.kge,
+            "best_kge_val": best_overall.kge_val,
+            "delta_kge": (best_overall.kge - baseline.kge) if np.isfinite(baseline.kge) else np.nan,
+            "delta_kge_val": (best_overall.kge_val - baseline.kge_val)
+                if np.isfinite(baseline.kge_val) and np.isfinite(best_overall.kge_val) else np.nan,
             "delta_rmse": (baseline.rmse - best_overall.rmse) if np.isfinite(baseline.rmse) else np.nan,
             "best_rain_lag_days": best_overall.rain_lag_days,
             "best_up_lag_days": best_overall.up_lag_days,
@@ -575,8 +586,8 @@ def main() -> int:
     print(f"Wrote summary: {out_summary}")
     print(f"Wrote trials: {out_trials}")
     if summary_rows:
-        show = pd.DataFrame(summary_rows).sort_values("delta_r2_val", ascending=False)
-        print(show[["st_id", "baseline_r2", "best_r2", "delta_r2", "baseline_r2_val", "best_r2_val", "delta_r2_val", "baseline_rf", "best_rf", "baseline_ups", "best_ups"]].head(20).to_string(index=False))
+        show = pd.DataFrame(summary_rows).sort_values("delta_kge_val", ascending=False)
+        print(show[["st_id", "baseline_kge", "best_kge", "delta_kge", "baseline_kge_val", "best_kge_val", "delta_kge_val", "baseline_rf", "best_rf", "baseline_ups", "best_ups"]].head(20).to_string(index=False))
 
     # Write optimized input CSV with improved pairings applied
     out_optimized = _resolve(args.output_optimized)
@@ -585,7 +596,7 @@ def main() -> int:
         input_csv=input_csv,
         summary_rows=summary_rows,
         out_csv=out_optimized,
-        min_delta_r2=args.min_improvement,
+        min_delta_kge=args.min_improvement,
     )
 
     # Draw the optimized upstream map for visual comparison with the initial map

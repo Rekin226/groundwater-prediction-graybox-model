@@ -10,8 +10,11 @@
 !/data/.gitkeep
 /docs/*
 
-/workspace/*
-!/workspace/.gitkeep
+# Ignore workspace contents but keep the folder structure visible via .gitkeep.
+# Git needs parent directories un-ignored too, hence the "!/workspace/**/" line.
+/workspace/**
+!/workspace/**/
+!/workspace/**/.gitkeep
 
 # Scratch / experimental runs — not for commit
 /test_neg_val/

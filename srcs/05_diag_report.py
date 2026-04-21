@@ -22,7 +22,7 @@ def tiny(series: pd.Series, tol: float) -> pd.Series:
 def build_diagnostics(
     fit_results: pd.DataFrame,
     gray_box_input: pd.DataFrame | None,
-    r2_threshold: float,
+    kge_threshold: float,
     eps: float,
     tiny_tol: float,
 ) -> pd.DataFrame:
@@ -32,8 +32,8 @@ def build_diagnostics(
     if "group_name" in df.columns and "group" not in df.columns:
         df["group"] = df["group_name"]
 
-    df["r2"] = _to_num(df["r2"]) if "r2" in df.columns else np.nan
-    df_low = df[df["r2"].notna() & (df["r2"] < r2_threshold)].copy()
+    df["kge_val"] = _to_num(df["kge_val"]) if "kge_val" in df.columns else np.nan
+    df_low = df[df["kge_val"].notna() & (df["kge_val"] < kge_threshold)].copy()
 
     if gray_box_input is not None and "st_id" in gray_box_input.columns and "st_id" in df_low.columns:
         gb = gray_box_input.copy()
@@ -140,7 +140,8 @@ def build_diagnostics(
             "group_name",
             "group",
             "model",
-            "r2",
+            "kge",
+            "kge_val",
             "rmse",
             "ups_id",
             "rf_id",
@@ -164,13 +165,13 @@ def build_diagnostics(
     rest = [c for c in df_low.columns if c not in front]
     df_low = df_low[front + rest]
 
-    return df_low.sort_values(["diagnostic_flags", "r2"], ascending=[False, True])
+    return df_low.sort_values(["diagnostic_flags", "kge_val"], ascending=[False, True])
 
 
 def main() -> int:
     base_dir = Path(__file__).resolve().parents[1]
 
-    parser = argparse.ArgumentParser(description="Generate diagnostics report for low-R² stations.")
+    parser = argparse.ArgumentParser(description="Generate diagnostics report for low-KGE stations.")
     parser.add_argument(
         "--run-id",
         default="initial",
@@ -187,10 +188,10 @@ def main() -> int:
         help="Path to gray_box_input.csv (optional merge for metadata)",
     )
     parser.add_argument(
-        "--r2-threshold",
+        "--kge-threshold",
         type=float,
         default=0.5,
-        help="Stations with r2 < threshold are included in the report",
+        help="Stations with kge_val < threshold are included in the report",
     )
     parser.add_argument(
         "--eps",
@@ -206,7 +207,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--output",
-        default=str(base_dir / "workspace" / "diagnostics" / "diagnostics_report_r2_below_0p5.csv"),
+        default=str(base_dir / "workspace" / "diagnostics" / "diagnostics_report_kge_below_0p5.csv"),
         help="Output CSV path",
     )
 
@@ -226,7 +227,7 @@ def main() -> int:
     report = build_diagnostics(
         fit_results=fit_df,
         gray_box_input=gb_df,
-        r2_threshold=args.r2_threshold,
+        kge_threshold=args.kge_threshold,
         eps=args.eps,
         tiny_tol=args.tiny_tol,
     )
@@ -236,9 +237,9 @@ def main() -> int:
     report.to_csv(out_path, index=False)
 
     print(f"Wrote diagnostics report: {out_path}")
-    print(f"Stations in report (r2 < {args.r2_threshold}): {len(report)}")
+    print(f"Stations in report (kge_val < {args.kge_threshold}): {len(report)}")
     if len(report) > 0:
-        show_cols = [c for c in ["st_id", "group_name", "model", "r2", "diagnostic_flags", "recommendation"] if c in report.columns]
+        show_cols = [c for c in ["st_id", "group_name", "model", "kge_val", "diagnostic_flags", "recommendation"] if c in report.columns]
         print(report[show_cols].head(20).to_string(index=False))
 
     return 0

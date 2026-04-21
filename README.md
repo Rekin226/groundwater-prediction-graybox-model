@@ -56,7 +56,7 @@ where `z_t = z` (constant-z) or `z_t = z0 + z1·(t/365.25)` (z(t) variants).
 - **Optimizer**: `scipy.optimize.differential_evolution` (global) + `curve_fit` polish for `pcov`.
 - **Temporal split**: calibration on data before `SPLIT_DATE` (default 2019-01-01); validation on data from that date onward.
 - **Validation hindcast**: continuous across the split — `h0_val = y_fit_cal[-1]` for all variants (no cold-start at the seam).
-- **Model selection**: best of the four variants by **`KGE_val`** (highest out-of-sample KGE). Falls back to AIC when validation data is unavailable.
+- **Model selection**: best of the four variants by **`KGE_val`** (highest out-of-sample KGE).
 
 ## Pipeline overview
 
@@ -226,7 +226,7 @@ python srcs/04_diag_pairing_search.py \
 |---|---|
 | Optimizer | `scipy.optimize.differential_evolution` (global) + `curve_fit` polish |
 | Variants fit per station | 4 (base, filtered, base_tz, filtered_tz) |
-| Model selection | `KGE_val` (highest out-of-sample KGE); AIC fallback when no validation data |
+| Model selection | `KGE_val` (highest out-of-sample KGE) |
 | Temporal split | Calibration before `SPLIT_DATE` (default 2019-01-01); validation onward |
 | Validation hindcast | Continuous: `h0_val = y_fit_cal[-1]` across all variants |
 | Metrics recorded | `rmse`, `r2`, `kge`, `rmse_val`, `r2_val`, `kge_val` + KGE decomposition (`kge_r`, `kge_alpha`, `kge_beta`, `bias`) |
@@ -245,7 +245,6 @@ python srcs/04_diag_pairing_search.py \
 | `rmse`, `r2`, `kge` | Calibration-period metrics |
 | `rmse_val`, `r2_val`, `kge_val` | Validation-period metrics |
 | `kge_r_val`, `kge_alpha_val`, `kge_beta_val`, `bias_val` | KGE decomposition on validation period |
-| `aic` | Akaike Information Criterion for the selected model |
 | `a`, `z` (or `z0`, `z1`), `b`, `c`, `k_link`, `lambda`, `tau_rain`, `tau_up`, `d_sin`, `d_cos` | Fitted parameters |
 | `k_sgd`, `gamma`, `h_sea` | Extra coastal parameters |
 | `{param}_std` | Parameter standard errors from `pcov` |

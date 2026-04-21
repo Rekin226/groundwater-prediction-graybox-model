@@ -71,14 +71,16 @@ compare:
 	import pandas as pd, numpy as np; \
 	f = 'workspace/results/$(RUN_ID)/gw_fit_results.csv'; \
 	df = pd.read_csv(f); \
+	ill = df[df.get('kge_ill_conditioned', False) == True] if 'kge_ill_conditioned' in df.columns else df.iloc[0:0]; \
+	good_df = df[~df.index.isin(ill.index)] if len(ill) else df; \
 	print(f'Results from {f}'); \
-	print(f'Stations: {len(df)}'); \
+	print(f'Stations: {len(df)}  (excluded from aggregates: {len(ill)} ill-conditioned: {list(ill.st_id) if len(ill) else []})'); \
 	print(f'Models used: {df.model.value_counts().to_dict()}'); \
-	print(f'Median val R2: {df.r2_val.median():.3f}'); \
-	print(f'Positive val R2: {(df.r2_val > 0).sum()}/{len(df)}'); \
-	print(f'Good (R2>=0.7): {(df.r2_val >= 0.7).sum()}'); \
-	print(f'Medium (0.5-0.7): {((df.r2_val >= 0.5) & (df.r2_val < 0.7)).sum()}'); \
-	print(f'Low (<0.5): {(df.r2_val < 0.5).sum()}'); \
+	print(f'Median val KGE: {good_df.kge_val.median():.3f}'); \
+	print(f'Positive val KGE: {(good_df.kge_val > 0).sum()}/{len(good_df)}'); \
+	print(f'Good (KGE>=0.7): {(good_df.kge_val >= 0.7).sum()}'); \
+	print(f'Medium (0.5-0.7): {((good_df.kge_val >= 0.5) & (good_df.kge_val < 0.7)).sum()}'); \
+	print(f'Low (<0.5): {(good_df.kge_val < 0.5).sum()}'); \
 	tz = df[df.model.str.contains('_tz', na=False)]; \
 	cz = df[~df.model.str.contains('_tz', na=False)]; \
 	print(f'Selected z(t): {len(tz)}, Selected constant-z: {len(cz)}'); \
@@ -163,9 +165,9 @@ print(f'Activated {len(df)} stations in {f}')"
 activate-low-r2:
 	$(PYTHON) -c "\
 import pandas as pd; \
-r2_threshold = 0.5; \
+kge_threshold = 0.5; \
 res = pd.read_csv('workspace/results/initial/gw_fit_results.csv'); \
-low = set(res.loc[res['r2'] < r2_threshold, 'st_id'].astype(str)); \
+low = set(res.loc[res['kge_val'] < kge_threshold, 'st_id'].astype(str)); \
 summary = pd.read_csv('workspace/diagnostics/pairing_search_summary.csv')[['st_id','best_rf','best_ups','best_rain_lag_days']].rename(columns={'best_rf':'rf_id','best_ups':'ups_id','best_rain_lag_days':'lag_days'}); \
 summary['st_id'] = summary['st_id'].astype(str); \
 summary = summary[summary['st_id'].isin(low)]; \

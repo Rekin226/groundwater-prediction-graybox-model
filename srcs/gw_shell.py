@@ -331,17 +331,19 @@ def estimate_bounds_inland(
     R_short = rainfall[:-1]
     AMP_short = amp[:-1]
 
-    # b from rainfall correlation (enforce non-negative recharge)
+    # b from rainfall correlation (enforce non-negative recharge).
+    # Floor scaled to observed b range across 61 stations (max ~0.015) —
+    # a wide floor (0.5) left 99% of search space physically implausible.
     valid_r = R_short != 0
     if np.any(valid_r) and np.var(R_short[valid_r]) > 0:
         b_est = np.cov(dh[valid_r], R_short[valid_r])[0, 1] / np.var(R_short[valid_r])
-        width_b = max(0.5, abs(b_est))
+        width_b = max(0.05, 5.0 * abs(b_est))
         b_min = 0.0
         b_max = b_est + width_b
     else:
-        b_est = 0.1
-        b_min, b_max = 0.0, 3.0
-    b_min, b_max = _ensure_bounds_spread(b_min, b_max, min_width=0.1)
+        b_est = 0.01
+        b_min, b_max = 0.0, 0.1
+    b_min, b_max = _ensure_bounds_spread(b_min, b_max, min_width=0.01)
 
     # c from AMP correlation
     valid_amp = AMP_short != 0
@@ -352,7 +354,7 @@ def estimate_bounds_inland(
         c_max = max(c_min + 0.1, c_est + width_c)
     else:
         c_est = 0.1
-        c_min, c_max = 0.0, 10.0
+        c_min, c_max = 0.0, 3.0
     c_min, c_max = _ensure_bounds_spread(c_min, c_max, min_width=0.1)
 
     if no_upstream:
@@ -413,17 +415,19 @@ def estimate_bounds_coastal(
     AMP_short = amp[:-1]
     AMT_short = amt[:-1]
 
-    # b from rainfall correlation (enforce non-negative recharge)
+    # b from rainfall correlation (enforce non-negative recharge).
+    # Floor scaled to observed b range across 61 stations (max ~0.015) —
+    # a wide floor (0.5) left 99% of search space physically implausible.
     valid_r = R_short != 0
     if np.any(valid_r) and np.var(R_short[valid_r]) > 0:
         b_est = np.cov(dh[valid_r], R_short[valid_r])[0, 1] / np.var(R_short[valid_r])
-        width_b = max(0.5, abs(b_est))
+        width_b = max(0.05, 5.0 * abs(b_est))
         b_min = 0.0
         b_max = b_est + width_b
     else:
-        b_est = 0.1
-        b_min, b_max = 0.0, 3.0
-    b_min, b_max = _ensure_bounds_spread(b_min, b_max, min_width=0.1)
+        b_est = 0.01
+        b_min, b_max = 0.0, 0.1
+    b_min, b_max = _ensure_bounds_spread(b_min, b_max, min_width=0.01)
 
     # c from AMP correlation
     valid_amp = AMP_short != 0
@@ -434,7 +438,7 @@ def estimate_bounds_coastal(
         c_max = max(c_min + 0.1, c_est + width_c)
     else:
         c_est = 0.1
-        c_min, c_max = 0.0, 10.0
+        c_min, c_max = 0.0, 3.0
     c_min, c_max = _ensure_bounds_spread(c_min, c_max, min_width=0.1)
 
     # gamma from AMT correlation
@@ -518,12 +522,6 @@ def estimate_bounds_coastal(
 ###############################################################################
 # Random multi-start curve fitting
 ###############################################################################
-
-def _compute_aic(n: int, rmse: float, k: int) -> float:
-    """Akaike Information Criterion. Lower is better."""
-    rss = n * (rmse ** 2)
-    return n * np.log(rss / n) + 2.0 * k
-
 
 def compute_metrics(obs: np.ndarray, pred: np.ndarray) -> dict:
     """Compute R², RMSE, KGE and its decomposition (r, alpha, beta), bias."""
@@ -768,7 +766,6 @@ def _fit_model(
     y_fit_cal = model_func(t_cal, *best_popt, **model_kwargs)
     rmse_cal = float(np.sqrt(mean_squared_error(h_obs_cal, y_fit_cal)))
     r2_cal   = float(r2_score(h_obs_cal, y_fit_cal))
-    aic      = _compute_aic(n_cal, rmse_cal, len(best_popt))
 
     # --- Validation metrics (out-of-sample) ---
     rmse_val = np.nan
@@ -806,7 +803,7 @@ def _fit_model(
     for name, val in zip(param_names, best_popt):
         std_str = f" ± {param_std.get(name+'_std', float('nan')):.4f}" if param_std else ""
         print(f"  {name} = {val:.4f}{std_str}")
-    print(f"  RMSE_cal={rmse_cal:.4f}  R²_cal={r2_cal:.4f}  AIC={aic:.2f}")
+    print(f"  RMSE_cal={rmse_cal:.4f}  R²_cal={r2_cal:.4f}")
     if has_val:
         print(f"  RMSE_val={rmse_val:.4f}  R²_val={r2_val:.4f}")
     print("========================================================\n")
@@ -821,6 +818,20 @@ def _fit_model(
     else:
         kge_val = float("nan")
 
+    # KGE-beta conditioning diagnostic: |mean(obs_val)|/std(obs_val).
+    # When this ratio is near zero, KGE beta (= mean_pred/mean_obs) explodes on
+    # tiny absolute biases — a known pathology (Kling 2012, Pool 2018). Flag
+    # stations below 0.05 so downstream reporting can exclude them from
+    # aggregate KGE summaries without distorting the multi-station median.
+    if has_val and len(h_obs) > n_cal:
+        obs_val = np.asarray(h_obs[n_cal:], dtype=float)
+        ov_mean = float(np.mean(obs_val))
+        ov_std  = float(np.std(obs_val))
+        mean_obs_val_ratio = abs(ov_mean) / ov_std if ov_std > 0 else float("nan")
+    else:
+        mean_obs_val_ratio = float("nan")
+    kge_ill_conditioned = bool(np.isfinite(mean_obs_val_ratio) and mean_obs_val_ratio < 0.05)
+
     # Build full-period y_fit for plotting (calibration only — validation plotted separately)
     return {
         "model": model_name,
@@ -833,7 +844,8 @@ def _fit_model(
         "r2_val": r2_val,
         "kge": kge_cal,
         "kge_val": kge_val,
-        "aic": aic,
+        "mean_obs_val_ratio": mean_obs_val_ratio,
+        "kge_ill_conditioned": kge_ill_conditioned,
         "y_fit": y_fit_cal,
         "y_fit_val": y_fit_val,
         "t": t_cal,
@@ -918,13 +930,8 @@ def run_station(args_params: dict) -> None:
         print("No successful fit found for any model.")
         sys.exit(1)
 
-    # Select best model by validation R² (highest = best out-of-sample prediction).
-    # Falls back to AIC if no validation data is available.
-    has_any_val = any(not np.isnan(r.get("r2_val", np.nan)) for r in model_results)
-    if has_any_val:
-        best_model = max(model_results, key=lambda item: item.get("r2_val", -np.inf))
-    else:
-        best_model = min(model_results, key=lambda item: item["aic"])
+    # Select best model by validation KGE (highest = best out-of-sample prediction).
+    best_model = max(model_results, key=lambda item: item.get("kge_val", -np.inf))
 
     station_label = args.get('st_id', args.get('gw_st', 'unknown'))
     plot_index = best_model["time_index"]
@@ -1219,7 +1226,8 @@ def run_station(args_params: dict) -> None:
         'kge_alpha_val': m_val['kge_alpha'],
         'kge_beta_val': m_val['kge_beta'],
         'bias_val': m_val['bias'],
-        'aic': best_model['aic'],
+        'mean_obs_val_ratio': best_model.get('mean_obs_val_ratio', float('nan')),
+        'kge_ill_conditioned': bool(best_model.get('kge_ill_conditioned', False)),
     }
     for name, val in zip(best_model['param_names'], best_model['params']):
         results[name] = float(val)
@@ -1245,7 +1253,8 @@ def run_station(args_params: dict) -> None:
             'kge': mc['kge'], 'kge_r': mc['kge_r'],
             'r2_val': result['r2_val'], 'rmse_val': result['rmse_val'],
             'kge_val': mv['kge'],
-            'aic': result['aic'],
+            'mean_obs_val_ratio': result.get('mean_obs_val_ratio', float('nan')),
+            'kge_ill_conditioned': bool(result.get('kge_ill_conditioned', False)),
         }
         for name, val in zip(result['param_names'], result['params']):
             row[name] = float(val)
