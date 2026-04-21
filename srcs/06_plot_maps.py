@@ -63,6 +63,7 @@ MED_COLOR = "#ff7f00"
 LOW_COLOR = "#de2d26"
 SEA_COLOR = "#c6e2f0"
 RIVER_COLOR = "#3a8bbf"
+FAN_FILL_COLOR = "#FFE8BE"
 
 VARIANT_DISPLAY = [
     ("base",        "M1: Direct"),
@@ -222,14 +223,16 @@ class MapContext:
             ax.imshow(self.wms_img, extent=self.wms_extent, aspect="auto",
                       zorder=-1, interpolation="bilinear")
         self.sea_clip.plot(ax=ax, color=SEA_COLOR, zorder=0)
-        self.boundary.boundary.plot(ax=ax, edgecolor="black", linewidth=1.2, zorder=5)
+        self.boundary.plot(ax=ax, facecolor=FAN_FILL_COLOR, edgecolor="none", zorder=4)
         self.riv_clip.plot(ax=ax, color=RIVER_COLOR, linewidth=0.7, alpha=0.75, zorder=6)
+        self.boundary.boundary.plot(ax=ax, edgecolor="black", linewidth=1.2, zorder=7)
 
     def style_axes(self, ax: plt.Axes, *, xlabel: bool = True, ylabel: bool = True) -> None:
         if xlabel:
-            ax.set_xlabel("Longitude (\u00b0E)", fontsize=9, fontweight="bold")
+            ax.set_xlabel("Longitude (\u00b0E)", fontsize=13, fontweight="bold")
         if ylabel:
-            ax.set_ylabel("Latitude (\u00b0N)", fontsize=9, fontweight="bold")
+            ax.set_ylabel("Latitude (\u00b0N)", fontsize=13, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=11)
         ax.ticklabel_format(useOffset=False, style="plain")
         ax.set_xlim(self.xlim)
         ax.set_ylim(self.ylim)
@@ -245,7 +248,8 @@ class MapContext:
         ax_ins.imshow(self.tw_img, extent=self.tw_extent, aspect="auto",
                       zorder=-1, interpolation="bilinear")
         self.sea_tw.plot(ax=ax_ins, color=SEA_COLOR, zorder=0)
-        self.boundary.boundary.plot(ax=ax_ins, edgecolor="black", linewidth=0.8, zorder=5)
+        self.boundary.plot(ax=ax_ins, facecolor=FAN_FILL_COLOR, edgecolor="none", zorder=4)
+        self.boundary.boundary.plot(ax=ax_ins, edgecolor="black", linewidth=0.8, zorder=7)
         ax_ins.set_xlim(119.7, 122.05)
         ax_ins.set_ylim(21.9, 25.35)
         ax_ins.set_xticks([])
@@ -301,7 +305,7 @@ def _tier_legend(sea_label: str = "Sea", study_label: str = "Study area",
                  tier_handles: list | None = None) -> list:
     handles = list(tier_handles or [])
     handles.append(Patch(facecolor=SEA_COLOR, edgecolor="none", label=sea_label))
-    handles.append(Line2D([0], [0], color="black", linewidth=1.2, label=study_label))
+    handles.append(Patch(facecolor=FAN_FILL_COLOR, edgecolor="black", linewidth=1.0, label=study_label))
     return handles
 
 
@@ -327,7 +331,7 @@ def _plot_tier_map(*, ctx: MapContext, points: gpd.GeoDataFrame, title: str,
     ax.legend(handles=_tier_legend(tier_handles=[marker_handle]),
               loc="upper left", fontsize=8, framealpha=0.95, edgecolor="black")
 
-    ax.set_title(title, fontsize=11, pad=6, fontweight="bold")
+    ax.set_title(title, fontsize=15, pad=8, fontweight="bold")
     ctx.style_axes(ax)
     ctx.draw_inset(ax)
 
@@ -339,7 +343,8 @@ def _plot_variant_grid(*, ctx: MapContext, stations: gpd.GeoDataFrame,
                        kge_good: float, kge_med: float, out_path: Path,
                        label_col: str, add_labels: bool, label_font_size: int,
                        dx_deg: float, dy_deg: float) -> None:
-    fig, axes = plt.subplots(2, 2, figsize=(14, 13))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 13), sharex=True, sharey=True,
+                             gridspec_kw={"hspace": 0.1, "wspace": 0.01})
 
     for idx, (ax, (variant, display)) in enumerate(zip(axes.flat, VARIANT_DISPLAY)):
         ctx.draw_backdrop(ax)
@@ -372,14 +377,14 @@ def _plot_variant_grid(*, ctx: MapContext, stations: gpd.GeoDataFrame,
         ax.legend(handles=_tier_legend(tier_handles=tier_handles),
                   loc="upper left", fontsize=8, framealpha=0.95, edgecolor="black")
 
-        ax.set_title(f"{display} \u2014 n={len(sub)}", fontsize=11, pad=6, fontweight="bold")
+        ax.set_title(f"{display} \u2014 n={len(sub)}", fontsize=15, pad=8, fontweight="bold")
         ctx.style_axes(ax,
                        xlabel=(idx >= 2),    # bottom row
                        ylabel=(idx % 2 == 0))  # left column
         ctx.draw_inset(ax)
         add_panel_label(ax, "abcd"[idx], fontsize=11, fontweight="bold")
+        ax.label_outer()  # hide redundant tick labels on inner rows/columns
 
-    plt.tight_layout()
     rklib_savefig(fig, str(out_path))
 
 

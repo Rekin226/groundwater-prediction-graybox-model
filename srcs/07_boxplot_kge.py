@@ -1,6 +1,6 @@
 """Boxplot of KGE across 61 stations, calibration vs validation, split by group.
 
-Layout: 2 rows (Calibration / Validation) x 4 columns (M1-M4 variants).
+Layout: 4 rows (M1-M4 variants) x 2 columns (Calibration / Validation).
 Each panel shows two boxes — Inland (n=54) vs Coastal (n=7) — of KGE values
 across stations, with outliers as dots and a dashed zero-line.
 
@@ -136,30 +136,28 @@ def plot_boxplot(df: pd.DataFrame, out_path: Path, ymin: float, ymax: float) -> 
                     for g in GROUP_ORDER}
 
     fig, axes = plt.subplots(
-        nrows=2, ncols=4,
-        figsize=(13.5, 7.0),
-        sharey=True,
+        nrows=4, ncols=2,
+        figsize=(8.0, 12.5),
+        sharey=True, sharex=True,
     )
 
     panel_idx = 0
-    for row_i, (metric_col, phase_label) in enumerate(PHASE_ORDER):
-        for col_i, (variant_key, variant_label) in enumerate(VARIANT_ORDER):
+    for row_i, (variant_key, variant_label) in enumerate(VARIANT_ORDER):
+        for col_i, (metric_col, phase_label) in enumerate(PHASE_ORDER):
             ax = axes[row_i, col_i]
             sub = df[df["model"] == variant_key]
             _draw_panel(ax, sub, metric_col, group_counts, ymin, ymax)
 
             if row_i == 0:
-                ax.set_title(variant_label, fontsize=11, fontweight="bold", pad=8)
+                ax.set_title(phase_label, fontsize=12, fontweight="bold", pad=8)
             if col_i == 0:
-                ax.set_ylabel(f"{phase_label}\nKGE", fontsize=11, fontweight="bold")
+                ax.set_ylabel(f"{variant_label}\nKGE", fontsize=11, fontweight="bold")
             ax.set_ylim(ymin, ymax)
 
             add_panel_label(ax, "abcdefgh"[panel_idx], fontsize=11, fontweight="bold")
             panel_idx += 1
 
-    fig.suptitle("KGE distribution across 61 stations — calibration vs validation",
-                 fontsize=13, fontweight="bold", y=0.995)
-    plt.tight_layout(rect=(0, 0, 1, 0.97))
+    plt.tight_layout()
     rklib_savefig(fig, str(out_path))
 
 
