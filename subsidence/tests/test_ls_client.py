@@ -67,3 +67,41 @@ def test_missing_env_raises(monkeypatch):
     monkeypatch.delenv("LS_PASS", raising=False)
     with pytest.raises(RuntimeError, match="LS_USER"):
         LSClient().get_token()
+
+
+import pandas as pd
+from pathlib import Path
+
+def test_cached_get_dataframe_writes_parquet(tmp_path, monkeypatch, mock_urlopen, fake_response):
+    monkeypatch.setenv("LS_USER", "u"); monkeypatch.setenv("LS_PASS", "p")
+    # Token then data
+    mock_urlopen.queue.append(fake_response({"access_token": "T", "token_type": "bearer"}))
+    mock_urlopen.queue.append(fake_response({
+        "columns": ["value"],
+        "index": ["2020-01-01T00:00:00", "2020-01-02T00:00:00"],
+        "data": [[1.0], [2.0]],
+    }))
+    c = LSClient()
+    df = c.cached_get_dataframe(
+        path="/dataset/x/station/y/data",
+        params={"orient": "split"},
+        cache_dir=tmp_path, cache_key="x__y",
+    )
+    assert list(df.columns) == ["value"]
+    assert df.iloc[0, 0] == 1.0
+    parquets = list(tmp_path.glob("*.parquet"))
+    assert len(parquets) == 1
+
+
+def test_cached_get_dataframe_uses_cache_on_second_call(tmp_path, monkeypatch, mock_urlopen, fake_response):
+    monkeypatch.setenv("LS_USER", "u"); monkeypatch.setenv("LS_PASS", "p")
+    mock_urlopen.queue.append(fake_response({"access_token": "T", "token_type": "bearer"}))
+    mock_urlopen.queue.append(fake_response({
+        "columns": ["value"], "index": ["2020-01-01T00:00:00"], "data": [[42.0]],
+    }))
+    c = LSClient()
+    df1 = c.cached_get_dataframe("/p", cache_dir=tmp_path, cache_key="k")
+    # second call should NOT make any HTTP request — queue was consumed
+    df2 = c.cached_get_dataframe("/p", cache_dir=tmp_path, cache_key="k")
+    pd.testing.assert_frame_equal(df1, df2)
+    assert mock_urlopen.call_count == 2  # token + first data, no extra

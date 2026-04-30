@@ -11,11 +11,25 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Optional
+
+import pandas as pd
 
 from subsidence.api_constants import (
     DEFAULT_SCOPE, LS_BASE, TOKEN_URL,
 )
+
+
+def split_to_df(split: dict) -> pd.DataFrame:
+    """Convert a pandas-split JSON payload to a DataFrame indexed by datetime."""
+    if not isinstance(split, dict) or "index" not in split:
+        raise ValueError(f"unexpected payload shape: {type(split)}")
+    df = pd.DataFrame(split["data"], columns=split["columns"])
+    if split["index"]:
+        df.index = pd.to_datetime(split["index"], utc=False, errors="coerce")
+        df.index.name = "datetime"
+    return df
 
 
 def to_api_id(gw_st) -> str:
@@ -96,3 +110,20 @@ class LSClient:
                     continue
                 body = e.read().decode("utf-8", errors="replace")[:500]
                 raise RuntimeError(f"HTTP {e.code} {url}\n{body}") from e
+
+    def cached_get_dataframe(self, path: str, params: Optional[dict] = None,
+                             cache_dir: Path = Path("data/ls_cache"),
+                             cache_key: Optional[str] = None,
+                             refresh: bool = False) -> pd.DataFrame:
+        cache_dir = Path(cache_dir); cache_dir.mkdir(parents=True, exist_ok=True)
+        if cache_key is None:
+            safe = path.replace("/", "_").strip("_")
+            qstr = urllib.parse.urlencode(params or {})
+            cache_key = f"{safe}__{qstr}".replace("=", "-").replace("&", "_")
+        fpath = cache_dir / f"{cache_key}.parquet"
+        if fpath.exists() and not refresh:
+            return pd.read_parquet(fpath)
+        payload = self.get_json(path, params=params)
+        df = split_to_df(payload)
+        df.to_parquet(fpath)
+        return df
