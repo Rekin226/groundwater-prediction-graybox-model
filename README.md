@@ -92,6 +92,71 @@ where `z_t = z` (constant-z) or `z_t = z0 + z1·(t/365.25)` (z(t) variants).
 03_run_model.py --input data/gray_box_input_optimized.csv --run_id final
 ```
 
+## Subsidence pipeline
+
+Extends the GW model with a parallel land-subsidence pipeline that predicts cumulative vertical displacement ζ(t) at GNSS, MLCW, and DBM stations in the Zhuoshui Alluvial Fan. Each station is driven by a hybrid h(t) — observed groundwater levels with GW-model gap-fill — so the two pipelines are sequentially decoupled: `srcs/` is imported as a read-only library; all new code lives in `subsidence/`.
+
+### Pipeline scripts
+
+| Script | Purpose |
+|---|---|
+| `01_fetch_ls_data.py` | Fetch GNSS / MLCW / DBM observations from WiseEnvr LS API |
+| `02_fetch_drivers.py` | Fetch GW + rainfall driver data |
+| `03_pair_sub_gw.py` | Co-located + nearest-neighbour-within-zone pairing |
+| `04_assemble_h_driver.py` | Hybrid driver with cosine-tapered gap-fill |
+| `05_run_subsidence.py` | Multiprocessing dispatcher; 4-variant fit per station |
+| `06_diag_report.py` | Weak-station diagnostics |
+| `07_plot_maps.py` | Spatial maps |
+
+### Calibration protocol
+
+**Forms**
+
+- **Form 2** (Riley/IBS): elastic + inelastic compaction — available to all station types.
+- **Form 3**: adds aquitard drainage time constant τ — eligible for MLCW stations only.
+
+**2×2 factorial design**
+
+Four variants per station spanning two axes:
+
+|  | **Constant v\_tect** | **Linear v\_tect(t)** |
+|---|---|---|
+| **Form 2** | M1 | M2 |
+| **Form 3 (MLCW only)** | M3 | M4 |
+
+Best variant selected by validation KGE; rate-KGE used as a secondary diagnostic.
+
+**Temporal split**
+
+| Period | Dates |
+|---|---|
+| Calibration | 2020-01-01 → 2022-12-31 |
+| Buffer (excluded) | 2023 |
+| Validation | 2024-01-01 → 2025-03-31 |
+
+### Required environment variables
+
+Steps 01 and 04 call the live WiseEnvr LS API:
+
+```bash
+export LS_USER=your_username
+export LS_PASS=your_password
+```
+
+### Make targets
+
+| Target | Description |
+|---|---|
+| `make sub-fetch` | Steps 01 + 02 — fetch LS observations and drivers (live API) |
+| `make sub-pair` | Step 03 — compute subsidence ↔ GW pairings |
+| `make sub-driver` | Step 04 — assemble hybrid h_driver per station (live API) |
+| `make sub-run` | Step 05 — fit all active stations (default `SUB_RUN_ID=initial`) |
+| `make sub-run-station SUB_STATION=TKJS` | Single-station fit |
+| `make sub-compare` | Step 06 — diagnostic report on weak stations |
+| `make sub-maps` | Step 07 — generate spatial maps |
+| `make sub-help` | Print subsidence-pipeline help |
+| `make sub-clean` | Remove `workspace/results_sub/<SUB_RUN_ID>` |
+
 ## Project structure
 
 ```
