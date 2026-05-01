@@ -48,6 +48,9 @@ help:
 	@echo "  make run-classic RUN_ID=classic              # all stations, constant-z only"
 	@echo "  make compare                                 # compare results"
 	@echo "  make clean RUN_ID=test"
+	@echo ""
+	@echo "Subsidence pipeline:"
+	@echo "  sub-help        Detailed subsidence-pipeline help"
 
 # ── Pipeline shortcuts ─────────────────────────────────────────────────────────
 all: step1 step2 step3 step4 step5 step6
@@ -182,3 +185,53 @@ df = df.drop(columns=['rf_id_new','ups_id_new','lag_days_new']); \
 df['active'] = df['st_id'].isin(low).astype(int); \
 df.to_csv(f, index=False); \
 print(f'Applied best pairings + activated {int(df[\"active\"].sum())} station(s) in {f}: {sorted(low)}')"
+
+# ── Subsidence pipeline ────────────────────────────────────────────────────────
+SUB_RUN_ID ?= initial
+SUB_STATION ?=
+
+.PHONY: sub-fetch sub-driver sub-pair sub-run sub-run-station sub-compare sub-maps sub-clean sub-help
+
+sub-help:
+	@echo "Usage: make sub-<target> [SUB_RUN_ID=initial] [SUB_STATION=YSLL]"
+	@echo ""
+	@echo "Subsidence pipeline:"
+	@echo "  sub-fetch         Fetch LS observations + GW/rainfall drivers (steps 01 + 02)"
+	@echo "  sub-pair          Compute subsidence ↔ GW pairings (step 03)"
+	@echo "  sub-driver        Assemble hybrid h_driver per station (step 04)"
+	@echo "  sub-run           Fit subsidence ODE for all active stations (step 05)"
+	@echo "  sub-run-station   Single-station fit: make sub-run-station SUB_STATION=TKJS"
+	@echo "  sub-compare       Diagnostic report on weak stations (step 06)"
+	@echo "  sub-maps          Spatial maps (step 07)"
+	@echo "  sub-clean         Remove workspace/results_sub/<SUB_RUN_ID>"
+	@echo ""
+	@echo "Required env vars (for sub-fetch and sub-driver): LS_USER, LS_PASS"
+
+sub-fetch:
+	$(PYTHON) subsidence/01_fetch_ls_data.py
+	$(PYTHON) subsidence/02_fetch_drivers.py
+
+sub-pair:
+	$(PYTHON) subsidence/03_pair_sub_gw.py
+
+sub-driver:
+	$(PYTHON) subsidence/04_assemble_h_driver.py
+
+sub-run:
+	$(PYTHON) subsidence/05_run_subsidence.py --run-id $(SUB_RUN_ID)
+
+sub-run-station:
+ifndef SUB_STATION
+	$(error SUB_STATION is required. Usage: make sub-run-station SUB_STATION=TKJS)
+endif
+	$(PYTHON) subsidence/05_run_subsidence.py --run-id $(SUB_RUN_ID) --station $(SUB_STATION)
+
+sub-compare:
+	$(PYTHON) subsidence/06_diag_report.py --run-id $(SUB_RUN_ID)
+
+sub-maps:
+	$(PYTHON) subsidence/07_plot_maps.py --run-id $(SUB_RUN_ID)
+
+sub-clean:
+	rm -rf workspace/results_sub/$(SUB_RUN_ID)
+	@echo "Removed workspace/results_sub/$(SUB_RUN_ID)"
