@@ -19,8 +19,10 @@
 # Scratch / experimental runs — not for commit
 /test_neg_val/
 
-# Derived subsidence data outputs (fetched at runtime, not for commit)
+# Derived subsidence data outputs (fetched / computed at runtime, not for commit)
 /subsidence/data/sub_station_master.csv
+/subsidence/data/sub_pairing.csv
+/subsidence/data/h_drivers/
 
 /.github/
 
