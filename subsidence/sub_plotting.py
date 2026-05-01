@@ -46,7 +46,14 @@ def _setup():
     else:
         plt.rcParams.update({
             "font.family": "serif",
-            "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+            "font.serif": [
+                "Times New Roman",
+                "PingFang TC",        # macOS Traditional Chinese
+                "Heiti TC",           # macOS fallback
+                "Noto Sans CJK TC",   # Linux/CI
+                "WenQuanYi Zen Hei",  # Linux fallback
+                "DejaVu Serif",
+            ],
             "font.size": 10,
             "axes.titlesize": 12,
             "axes.labelsize": 11,

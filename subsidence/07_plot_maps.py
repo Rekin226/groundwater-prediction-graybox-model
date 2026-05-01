@@ -41,7 +41,18 @@ def _setup():
     if _USE_RKLIB:
         setup_font()
     else:
-        plt.rcParams.update({"font.family": "Times New Roman", "font.size": 10})
+        plt.rcParams.update({
+            "font.family": "serif",
+            "font.serif": [
+                "Times New Roman",
+                "PingFang TC",        # macOS Traditional Chinese
+                "Heiti TC",           # macOS fallback
+                "Noto Sans CJK TC",   # Linux/CI
+                "WenQuanYi Zen Hei",  # Linux fallback
+                "DejaVu Serif",
+            ],
+            "font.size": 10,
+        })
 
 
 def _save(fig, path: Path):
