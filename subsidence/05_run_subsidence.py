@@ -133,6 +133,74 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
                **{k: f[k] for k in f if k.startswith(("kge_", "rmse_", "r2_", "bias_"))}}
         rows.append(row)
     pd.DataFrame(rows).to_csv(out_dir / f"{sub_id}.csv", index=False)
+
+    # ------------------------------------------------------------------
+    # Plots (rklib-style, TIFF 300 DPI)
+    # ------------------------------------------------------------------
+    try:
+        from subsidence.sub_plotting import (
+            plot_per_variant,
+            plot_comparison,
+            plot_full_subplots,
+            plot_mlcw_layer_profile,
+        )
+        fig_dir = Path(f"workspace/results_sub/{run_id}/figures")
+
+        # Per-variant figures
+        for v, f in fit["all_variants"].items():
+            plot_per_variant(
+                sub_id=sub_id,
+                variant=v,
+                t=idx,
+                zeta_obs=zeta.values,
+                sim=f["sim_full"],
+                cal_idx=cal_idx,
+                val_idx=val_idx,
+                metrics={k: f[k] for k in f
+                         if k.startswith(("kge_", "rmse_", "r2_", "bias_"))},
+                out_path=fig_dir / v / f"sub_fit_{sub_id}.tiff",
+            )
+
+        # Comparison overlay + metrics table
+        plot_comparison(
+            sub_id=sub_id,
+            t=idx,
+            zeta_obs=zeta.values,
+            fits=fit["all_variants"],
+            cal_idx=cal_idx,
+            val_idx=val_idx,
+            out_path=fig_dir / "comparison" / f"sub_compare_{sub_id}.tiff",
+        )
+
+        # Best-variant overview (ζ + h_driver + rainfall)
+        best = fit["best_variant"]
+        sim_best = fit["all_variants"][best]["sim_full"]
+        plot_full_subplots(
+            sub_id=sub_id,
+            t=idx,
+            zeta_obs=zeta.values,
+            sim_best=sim_best,
+            h_driver=h,
+            driver_source=h_df["driver_source"].values
+            if "driver_source" in h_df.columns else None,
+            rainfall=None,  # rainfall integration deferred to Phase 9
+            out_path=fig_dir / "full_subplots" / f"sub_fit_{sub_id}.tiff",
+        )
+
+        # MLCW per-layer compaction profile (only for MLCW dataset)
+        if sub_dataset == "ls-wra-mlcw-obs":
+            layer_csv = out_dir / f"{sub_id}_mlcw_layer.csv"
+            if layer_csv.exists():
+                plot_mlcw_layer_profile(
+                    sub_id=sub_id,
+                    layer_csv_path=layer_csv,
+                    out_path=fig_dir / "mlcw_layer_profiles" / f"{sub_id}.tiff",
+                )
+    except Exception as _plot_err:
+        import traceback
+        print(f"  [plot warning] {sub_id}: {_plot_err}")
+        traceback.print_exc()
+
     best_kge = fit["all_variants"][fit["best_variant"]]["kge_val"]
     return f"  {sub_id}: best={fit['best_variant']}  kge_val={best_kge:.3f}"
 
