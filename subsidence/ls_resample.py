@@ -9,6 +9,18 @@ def clip_negative_to_zero(s: pd.Series) -> pd.Series:
     return s.where(s >= 0, RAINFALL_NEG_REPLACE)
 
 
+def mask_sentinels(s: pd.Series, threshold: float = -50.0) -> pd.Series:
+    """Replace values below *threshold* with NaN.
+
+    GW levels in the Zhuoshui Alluvial Fan range roughly from -30 m (deep
+    coastal aquifers) to +50 m (inland highlands).  Any value below -50 m is
+    a WiseEnvr API sentinel (e.g. -999998, -9999, -998) and should be treated
+    as missing rather than a real measurement.  We use NaN so that
+    ``daily_mean`` silently skips the bad readings via ``resample().mean()``.
+    """
+    return s.where(s >= threshold, other=float("nan"))
+
+
 def daily_mean(s: pd.Series) -> pd.Series:
     """Aggregate a higher-frequency series to daily mean (NaN-aware)."""
     return s.resample("1D").mean()

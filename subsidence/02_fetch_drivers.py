@@ -19,7 +19,7 @@ import pandas as pd
 
 from subsidence.api_constants import GW_10MIN, RAIN_10MIN
 from subsidence.ls_client import LSClient
-from subsidence.ls_resample import clip_negative_to_zero, daily_mean, daily_sum
+from subsidence.ls_resample import clip_negative_to_zero, daily_mean, daily_sum, mask_sentinels
 
 CACHE_DIR = Path("data/ls_cache")
 GW_INPUT = Path("data/gray_box_input.csv")
@@ -36,7 +36,8 @@ def fetch_gw(client: LSClient, gw_st: int, start: str, end: str) -> pd.DataFrame
     )
     if df.empty:
         return df
-    daily = daily_mean(df["value"]).to_frame("h_obs_m")
+    clean = mask_sentinels(df["value"])     # drop sentinel values before averaging
+    daily = daily_mean(clean).to_frame("h_obs_m")
     daily.to_parquet(CACHE_DIR / f"gw__{api_id}.parquet")
     return daily
 
