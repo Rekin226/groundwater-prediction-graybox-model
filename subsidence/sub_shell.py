@@ -1,0 +1,113 @@
+"""Per-station calibration pipeline (one variant at a time).
+
+Provides the building block fit_one_variant(); the public entrypoint
+fit_station() runs all 4 variants and selects by validation KGE.
+"""
+from __future__ import annotations
+from typing import Dict
+import numpy as np
+from scipy.optimize import differential_evolution, curve_fit
+
+from subsidence.sub_subroutine import simulate_form2, simulate_form3
+from subsidence.sub_metrics import kge_components, rmse, r2, kge_on_rate
+
+VARIANTS = ("M1", "M2", "M3_tau", "M4_tau")
+
+
+def _form_for(variant: str) -> str:
+    return "form3" if variant.endswith("_tau") else "form2"
+
+
+def _v_tect_linear_for(variant: str) -> bool:
+    return variant.startswith("M2") or variant.startswith("M4")
+
+
+def _simulate_variant(h, t_years, params: dict, variant: str, *, smooth_max: bool):
+    use_form3 = _form_for(variant) == "form3"
+    use_linear = _v_tect_linear_for(variant)
+    v_tect = params.get("v_tect", 0.0)
+    v_tect_linear = (params["v0"], params["v1"]) if use_linear else None
+    if use_form3:
+        return simulate_form3(h, t_years=t_years,
+                              Sk_e=params["Sk_e"], Sk_v=params["Sk_v"],
+                              h_ref=params["h_ref"], v_tect=v_tect,
+                              tau_days=params["tau"], smooth_max=smooth_max,
+                              v_tect_linear=v_tect_linear)
+    return simulate_form2(h, t_years=t_years,
+                          Sk_e=params["Sk_e"], Sk_v=params["Sk_v"],
+                          h_ref=params["h_ref"], v_tect=v_tect,
+                          smooth_max=smooth_max,
+                          v_tect_linear=v_tect_linear)
+
+
+def _param_keys(variant: str) -> list[str]:
+    keys = ["Sk_e", "Sk_v", "h_ref"]
+    if _v_tect_linear_for(variant):
+        keys += ["v0", "v1"]
+    else:
+        keys += ["v_tect"]
+    if _form_for(variant) == "form3":
+        keys += ["tau"]
+    return keys
+
+
+def fit_one_variant(*, h, zeta_obs, t_years, variant: str,
+                    cal_idx, val_idx,
+                    bounds: Dict[str, tuple[float, float]],
+                    seed: int = 42) -> dict:
+    keys = _param_keys(variant)
+    bnds = [bounds[k] for k in keys]
+
+    h_cal = h[cal_idx]; t_cal = t_years[cal_idx]; z_cal = zeta_obs[cal_idx]
+
+    def _residual(x):
+        params = {k: v for k, v in zip(keys, x)}
+        sim = _simulate_variant(h_cal, t_cal, params, variant, smooth_max=False)
+        return np.sum((sim - z_cal) ** 2)
+
+    de = differential_evolution(_residual, bnds, seed=seed,
+                                maxiter=400, tol=1e-7, polish=False, workers=1)
+    x0 = de.x
+
+    # curve_fit polish using smooth_max
+    def _model(_x, *params):
+        p = {k: v for k, v in zip(keys, params)}
+        return _simulate_variant(h_cal, t_cal, p, variant, smooth_max=True)
+    try:
+        x_polished, _pcov = curve_fit(_model, np.arange(len(z_cal)), z_cal,
+                                      p0=x0,
+                                      bounds=([b[0] for b in bnds], [b[1] for b in bnds]),
+                                      maxfev=2000)
+    except Exception:
+        x_polished = x0
+
+    params_out = {k: float(v) for k, v in zip(keys, x_polished)}
+    sim_full = _simulate_variant(h, t_years, params_out, variant, smooth_max=False)
+
+    out = {"variant": variant, "params": params_out, "kge_ill_conditioned": False}
+    for label, idx in [("cal", cal_idx), ("val", val_idx)]:
+        kc = kge_components(zeta_obs[idx], sim_full[idx])
+        out[f"kge_{label}"] = kc["kge"]
+        out[f"kge_r_{label}"] = kc["r"]
+        out[f"kge_alpha_{label}"] = kc["alpha"]
+        out[f"kge_beta_{label}"] = kc["beta"]
+        out[f"bias_{label}"] = kc["bias"]
+        out[f"rmse_{label}"] = rmse(zeta_obs[idx], sim_full[idx])
+        out[f"r2_{label}"] = r2(zeta_obs[idx], sim_full[idx])
+        out[f"kge_rate_{label}"] = kge_on_rate(zeta_obs[idx], sim_full[idx])
+    out["sim_full"] = sim_full
+    return out
+
+
+def fit_station(*, h, zeta_obs, t_years, cal_idx, val_idx,
+                bounds: Dict[str, tuple[float, float]],
+                form3_eligible: bool = False,
+                seed: int = 42) -> dict:
+    """Fit all 4 (or fewer) variants and select best by val KGE."""
+    variants = list(VARIANTS) if form3_eligible else ["M1", "M2"]
+    fits = {v: fit_one_variant(h=h, zeta_obs=zeta_obs, t_years=t_years,
+                               variant=v, cal_idx=cal_idx, val_idx=val_idx,
+                               bounds=bounds, seed=seed) for v in variants}
+    best = max(fits, key=lambda v: fits[v]["kge_val"]
+               if not np.isnan(fits[v]["kge_val"]) else -np.inf)
+    return {"best_variant": best, "all_variants": fits}
