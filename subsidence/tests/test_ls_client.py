@@ -1,5 +1,6 @@
 import pytest
-from subsidence.ls_client import to_api_id, from_api_id
+import pandas as pd
+from subsidence.ls_client import to_api_id, from_api_id, split_to_df
 
 
 def test_to_api_id_pads_to_eight():
@@ -69,7 +70,6 @@ def test_missing_env_raises(monkeypatch):
         LSClient().get_token()
 
 
-import pandas as pd
 from pathlib import Path
 
 def test_cached_get_dataframe_writes_parquet(tmp_path, monkeypatch, mock_urlopen, fake_response):
@@ -105,3 +105,24 @@ def test_cached_get_dataframe_uses_cache_on_second_call(tmp_path, monkeypatch, m
     df2 = c.cached_get_dataframe("/p", cache_dir=tmp_path, cache_key="k")
     pd.testing.assert_frame_equal(df1, df2)
     assert mock_urlopen.call_count == 2  # token + first data, no extra
+
+
+def test_split_to_df_preserves_non_datetime_index_when_flag_false():
+    payload = {
+        "index": ["YSLL", "TKJS", "新街國小"],
+        "columns": ["lat", "lon"],
+        "data": [[23.7, 120.2], [23.6, 120.4], [23.9, 120.3]],
+    }
+    df = split_to_df(payload, datetime_index=False)
+    assert list(df.index) == ["YSLL", "TKJS", "新街國小"]
+    assert df.loc["YSLL", "lat"] == 23.7
+
+
+def test_split_to_df_default_coerces_to_datetime():
+    payload = {
+        "index": ["2020-01-01T00:00:00", "2020-01-02T00:00:00"],
+        "columns": ["value"],
+        "data": [[1.0], [2.0]],
+    }
+    df = split_to_df(payload)  # default datetime_index=True
+    assert isinstance(df.index, pd.DatetimeIndex)

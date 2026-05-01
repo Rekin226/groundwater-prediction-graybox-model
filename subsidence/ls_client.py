@@ -21,14 +21,25 @@ from subsidence.api_constants import (
 )
 
 
-def split_to_df(split: dict) -> pd.DataFrame:
-    """Convert a pandas-split JSON payload to a DataFrame indexed by datetime."""
+def split_to_df(split: dict, *, datetime_index: bool = True) -> pd.DataFrame:
+    """Convert a pandas-split JSON payload to a DataFrame.
+
+    Parameters
+    ----------
+    split : dict with 'index', 'columns', 'data' keys (pandas split orient).
+    datetime_index : if True (default), coerce the index to DatetimeIndex.
+        Pass False for metadata payloads where the index contains
+        non-datetime values (e.g. station IDs).
+    """
     if not isinstance(split, dict) or "index" not in split:
         raise ValueError(f"unexpected payload shape: {type(split)}")
     df = pd.DataFrame(split["data"], columns=split["columns"])
     if split["index"]:
-        df.index = pd.to_datetime(split["index"], utc=False, errors="coerce")
-        df.index.name = "datetime"
+        if datetime_index:
+            df.index = pd.to_datetime(split["index"], utc=False, errors="coerce")
+            df.index.name = "datetime"
+        else:
+            df.index = split["index"]
     return df
 
 
