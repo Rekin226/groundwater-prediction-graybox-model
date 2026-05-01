@@ -19,6 +19,9 @@
 # Scratch / experimental runs — not for commit
 /test_neg_val/
 
+# Derived subsidence data outputs (fetched at runtime, not for commit)
+/subsidence/data/sub_station_master.csv
+
 /.github/
 
 # -----------------------------
