@@ -24,6 +24,7 @@ from subsidence.ls_resample import clip_negative_to_zero, daily_mean, daily_sum,
 CACHE_DIR = Path("data/ls_cache")
 GW_INPUT = Path("data/gray_box_input.csv")
 RF_STATIONS = Path("data/rf_stations.csv")
+RAIN_VALUE_COL = "Now"  # 10-minute rainfall reading column in met-cwa-rain10min-obs payload
 
 
 def fetch_gw(client: LSClient, gw_st: int, start: str, end: str) -> pd.DataFrame:
@@ -51,6 +52,9 @@ def fetch_rain(client: LSClient, rf_id: str, start: str, end: str,
     the join key in gray_box_input.csv.
     """
     out_key = label if label else rf_id
+    # NOTE: LSClient default 60s timeout may be too short for full-range
+    # rainfall pulls (multi-MB payloads). Bump in Phase 4 / production runs:
+    # client = LSClient(timeout=300.0)
     df = client.cached_get_dataframe(
         f"/dataset/{RAIN_10MIN}/station/{rf_id}/data",
         params={"orient": "split", "start_datetime": start, "end_datetime": end},
@@ -58,8 +62,8 @@ def fetch_rain(client: LSClient, rf_id: str, start: str, end: str,
     )
     if df.empty:
         return df
-    # 'Now' column is the 10-min reading; clip negatives, then daily-sum
-    s = clip_negative_to_zero(df["Now"].astype(float))
+    # RAIN_VALUE_COL is the 10-min reading; clip negatives, then daily-sum
+    s = clip_negative_to_zero(df[RAIN_VALUE_COL].astype(float))
     daily = daily_sum(s).to_frame("rainfall_mm")
     daily.to_parquet(CACHE_DIR / f"rain__{out_key}.parquet")
     return daily

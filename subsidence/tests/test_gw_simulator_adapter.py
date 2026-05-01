@@ -7,7 +7,7 @@ def test_select_simulator_returns_callable():
     assert callable(fn)
 
 
-def test_simulate_runs_for_inland_base(monkeypatch):
+def test_simulate_runs_for_inland_base():
     # Smoke: build minimal inputs and check result shape.
     n = 30
     rain = np.ones(n) * 5.0

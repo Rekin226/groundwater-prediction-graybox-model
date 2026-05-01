@@ -49,6 +49,10 @@ def simulate_form2(h: np.ndarray, t_years: np.ndarray,
     h_min_hist = np.minimum.accumulate(h)
 
     b_e = Sk_e * mfn(h_ref - h)
+    # Inelastic (irreversible): tracks how far the historical minimum head
+    # has dropped below the preconsolidation reference. h_min_hist is monotone
+    # non-increasing, so b_i is monotone non-decreasing — once accrued, locked in.
+    # See Hoffmann et al. (2003) eq. 2; Galloway & Burbey (2011) eq. 4.
     b_i = Sk_v * mfn(h_ref - h_min_hist)
     if v_tect_linear is not None:
         v0, v1 = v_tect_linear
@@ -73,6 +77,21 @@ def simulate_form3(h: np.ndarray, t_years: np.ndarray, *,
     """Form 3: Form 2 with aquitard hydrodynamic delay τ (days).
 
     dζ/dt = (1/τ) · [b_e + b_i + v_tect·t − ζ]   (Euler, dt = 1 day)
+
+    Parameters
+    ----------
+    h, t_years, Sk_e, Sk_v, h_ref, v_tect, smooth_max, v_tect_linear
+        See simulate_form2.
+    tau_days : float
+        Aquitard delay time constant (days). Must be ≥ 0.
+        tau_days < 1 is treated as sub-timestep (instantaneous response,
+        equivalent to Form 2). The Euler gain (1/τ) is clamped to ≤ 1
+        for stability.
+
+    Returns
+    -------
+    zeta : np.ndarray
+        Cumulative compaction (m), same shape as h, anchored ζ(t_0) = 0.
     """
     target = simulate_form2(h, t_years=t_years, Sk_e=Sk_e, Sk_v=Sk_v,
                             h_ref=h_ref, v_tect=v_tect,
