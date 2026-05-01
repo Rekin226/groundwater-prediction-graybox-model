@@ -8,6 +8,8 @@ Reads:
 Writes:
     workspace/results_sub/<run_id>/per_station/<sub_id>.csv
     workspace/results_sub/<run_id>/per_station/<sub_id>_mlcw_layer.csv  (MLCW only)
+    workspace/results_sub/<run_id>/sub_fit_results.csv      (best variant per station)
+    workspace/results_sub/<run_id>/all_variants_results.csv (all variants per station)
 
 Run:
     poetry run python subsidence/05_run_subsidence.py --run-id initial
@@ -135,6 +137,33 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     return f"  {sub_id}: best={fit['best_variant']}  kge_val={best_kge:.3f}"
 
 
+def _merge(run_id: str):
+    """Concat per-station CSVs into run-level summary tables.
+
+    Skips *_mlcw_layer.csv files (different schema — per-layer compaction,
+    datetime-indexed).  Writes:
+        workspace/results_sub/{run_id}/sub_fit_results.csv      — best variant per station
+        workspace/results_sub/{run_id}/all_variants_results.csv — all variants per station
+    """
+    base = Path(f"workspace/results_sub/{run_id}/per_station")
+    rows = []
+    for f in sorted(base.glob("*.csv")):
+        if f.stem.endswith("_mlcw_layer"):
+            continue
+        rows.append(pd.read_csv(f))
+    if not rows:
+        return
+    all_df = pd.concat(rows, ignore_index=True)
+    # Ensure is_best is boolean (pandas reads "True"/"False" strings as object)
+    all_df["is_best"] = all_df["is_best"].astype(bool)
+    all_df.to_csv(f"workspace/results_sub/{run_id}/all_variants_results.csv", index=False)
+    best = all_df[all_df["is_best"]].copy()
+    best.to_csv(f"workspace/results_sub/{run_id}/sub_fit_results.csv", index=False)
+    print(f"\nMerged: {len(best)} stations × {best['variant'].nunique()} variants (best)")
+    print(f"  → workspace/results_sub/{run_id}/sub_fit_results.csv")
+    print(f"  → workspace/results_sub/{run_id}/all_variants_results.csv")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--run-id", default="initial")
@@ -157,6 +186,8 @@ def main(argv=None):
         with mp.Pool(args.workers) as pool:
             for msg in pool.starmap(_process, tasks):
                 print(msg)
+
+    _merge(args.run_id)
 
 
 if __name__ == "__main__":
