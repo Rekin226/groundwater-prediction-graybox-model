@@ -63,3 +63,26 @@ def simulate_form2(h: np.ndarray, t_years: np.ndarray,
     # Anchor ζ(t_0) = 0
     zeta = zeta - zeta[0]
     return zeta
+
+
+def simulate_form3(h: np.ndarray, t_years: np.ndarray, *,
+                   Sk_e: float, Sk_v: float, h_ref: float, v_tect: float,
+                   tau_days: float,
+                   smooth_max: bool = False,
+                   v_tect_linear: tuple[float, float] | None = None) -> np.ndarray:
+    """Form 3: Form 2 with aquitard hydrodynamic delay τ (days).
+
+    dζ/dt = (1/τ) · [b_e + b_i + v_tect·t − ζ]   (Euler, dt = 1 day)
+    """
+    target = simulate_form2(h, t_years=t_years, Sk_e=Sk_e, Sk_v=Sk_v,
+                            h_ref=h_ref, v_tect=v_tect,
+                            smooth_max=smooth_max,
+                            v_tect_linear=v_tect_linear)
+    n = len(h)
+    zeta = np.zeros(n)
+    # Clamp gain to [0, 1]: Euler with dt=1 day is stable only when inv_tau ≤ 1.
+    # τ < 1 day is sub-timestep and treated as instantaneous (gain = 1).
+    inv_tau = min(1.0 / max(tau_days, 1e-6), 1.0)
+    for k in range(1, n):
+        zeta[k] = zeta[k-1] + inv_tau * (target[k-1] - zeta[k-1])  # dt = 1 day
+    return zeta

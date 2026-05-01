@@ -1,5 +1,5 @@
 import numpy as np
-from subsidence.sub_subroutine import simulate_form2
+from subsidence.sub_subroutine import simulate_form2, simulate_form3
 
 
 def _step_h(n=1000, h_high=5.0, h_low=2.0, drop_at=200):
@@ -58,3 +58,31 @@ def test_form2_smooth_max_close_to_hard_max():
     z_hard = simulate_form2(h, smooth_max=False, **args)
     z_soft = simulate_form2(h, smooth_max=True, **args)
     assert np.max(np.abs(z_hard - z_soft)) < 0.02  # 2 cm tolerance for β=50
+
+
+def test_form3_with_large_tau_attenuates_response():
+    n = 500
+    h = np.full(n, 5.0)
+    h[100:] = 2.0  # step drop
+    t = np.arange(n) / 365.25
+    args = dict(t_years=t, Sk_e=0.0, Sk_v=1e-2, h_ref=5.0, v_tect=0.0,
+                smooth_max=False)
+    z_no_delay = simulate_form2(h, **args)
+    z_short_tau = simulate_form3(h, tau_days=10.0, **args)
+    z_long_tau = simulate_form3(h, tau_days=300.0, **args)
+    # Long-tau response is delayed and lags well below no-delay
+    assert z_long_tau[150] < z_short_tau[150]
+    assert z_short_tau[150] < z_no_delay[150] + 1e-6
+
+
+def test_form3_tau_zero_matches_form2_in_steady_state():
+    n = 1000
+    h = np.full(n, 5.0)
+    h[100:] = 2.0
+    t = np.arange(n) / 365.25
+    args = dict(t_years=t, Sk_e=0.0, Sk_v=1e-2, h_ref=5.0, v_tect=0.0,
+                smooth_max=False)
+    z2 = simulate_form2(h, **args)
+    # Very small tau effectively no delay
+    z3 = simulate_form3(h, tau_days=0.5, **args)
+    assert abs(z3[-1] - z2[-1]) < 1e-3
