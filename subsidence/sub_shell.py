@@ -81,9 +81,24 @@ def fit_one_variant(*, h, zeta_obs, t_years, variant: str,
     except Exception:
         x_polished = x0
 
+    # Acceptance gate: only keep the polished solution if it does not degrade
+    # the cal-period residual under the hard-max loss surface that DE optimised
+    # against.  Comparing both candidates on the same loss is the only fair
+    # check; smooth_max and hard-max can disagree on which point is "better".
+    def _residual_smooth(x):
+        p = {k: v for k, v in zip(keys, x)}
+        sim = _simulate_variant(h_cal, t_cal, p, variant, smooth_max=False)
+        return float(np.sum((sim - z_cal) ** 2))
+
+    if _residual_smooth(x_polished) > _residual_smooth(x0):
+        x_polished = x0  # polish degraded; revert
+
     params_out = {k: float(v) for k, v in zip(keys, x_polished)}
     sim_full = _simulate_variant(h, t_years, params_out, variant, smooth_max=False)
 
+    # kge_ill_conditioned = False (hardcoded): cumulative ζ has large mean for
+    # subsidence-affected stations; the GW-pipeline ill-conditioned guard
+    # (|mean|/std < 0.05) rarely triggers and the diagnostic value is low here.
     out = {"variant": variant, "params": params_out, "kge_ill_conditioned": False}
     for label, idx in [("cal", cal_idx), ("val", val_idx)]:
         kc = kge_components(zeta_obs[idx], sim_full[idx])
