@@ -11,7 +11,13 @@ from scipy.optimize import differential_evolution, curve_fit
 from subsidence.sub_subroutine import simulate_form2, simulate_form3
 from subsidence.sub_metrics import kge_components, rmse, r2, kge_on_rate
 
-VARIANTS = ("M1", "M2", "M3_tau", "M4_tau")
+# M2/M4_tau (linear v_tect) were dropped after the v2_structure run: with
+# v_tect tightened to ±0.005 m/yr, the linear form (v0 + v1·t) was systematically
+# pegging at the corner v0=+0.005, v1=±0.002 — using two parameters to escape
+# the v_tect cap by stacking, effectively absorbing the same non-stationary
+# trend tighter bounds were meant to remove.  The constant-v_tect variants
+# (M1, M3_tau) preserve identifiability.
+VARIANTS = ("M1", "M3_tau")
 
 
 def _form_for(variant: str) -> str:
@@ -163,8 +169,8 @@ def fit_station(*, h, zeta_obs, t_years, cal_idx, val_idx,
                 form3_eligible: bool = False,
                 seed: int = 42,
                 rate_weight: float = 0.5) -> dict:
-    """Fit all 4 (or fewer) variants and select best by val KGE."""
-    variants = list(VARIANTS) if form3_eligible else ["M1", "M2"]
+    """Fit all (form3-eligible-aware) variants and select best by val KGE."""
+    variants = list(VARIANTS) if form3_eligible else ["M1"]
     fits = {v: fit_one_variant(h=h, zeta_obs=zeta_obs, t_years=t_years,
                                variant=v, cal_idx=cal_idx, val_idx=val_idx,
                                bounds=bounds, seed=seed,

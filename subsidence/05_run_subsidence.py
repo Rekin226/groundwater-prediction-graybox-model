@@ -48,9 +48,22 @@ MIN_FORM3_OBS = 36
 EXCLUDED_DATASETS = ("ls-wra-dbm-obs",)
 
 
+MLCW_MIN_CAL_OBS = 12   # ~1 year of monthly samples
+MLCW_MIN_VAL_OBS = 3
+
+
 def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
     """Build the cumulative ζ observable from a raw observation series.
-    For MLCW also writes per-layer compaction CSV (spec §9 requirement)."""
+    For MLCW also writes per-layer compaction CSV (spec §9 requirement).
+
+    MLCW deepest-ring selection: prefer the deepest ring that has adequate
+    cal+val coverage.  Some stations have one or two deepest rings retired
+    mid-record (e.g. 僑義國小: NO30/31 stop 2021-12 while NO1-29 continue
+    through 2025-03).  Falling through to the next-deepest viable ring
+    preserves a near-total-compaction signal at the cost of missing the
+    truly deepest interval — the alternative (deepest unconditionally) drops
+    the station entirely.
+    """
     if sub_dataset == "ls-wra-mlcw-obs":
         df = raw if isinstance(raw, pd.DataFrame) else raw.to_frame()
         cols = [c for c in df.columns if c.startswith("NO")]
@@ -66,11 +79,19 @@ def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
         per_layer_path = Path(f"workspace/results_sub/{run_id}/per_station/{sub_id}_mlcw_layer.csv")
         per_layer_path.parent.mkdir(parents=True, exist_ok=True)
         per_layer.to_csv(per_layer_path)
-        deepest_col = cols[-1]
-        s = df[deepest_col].dropna()
-        if s.empty:
+        # Deepest-viable ring selection: walk shallow-ward from the bottom
+        chosen_col = None
+        for c in reversed(cols):
+            s = df[c].dropna()
+            n_cal = int(((s.index >= CAL_START) & (s.index <= CAL_END)).sum())
+            n_val = int(((s.index >= VAL_START) & (s.index <= VAL_END)).sum())
+            if n_cal >= MLCW_MIN_CAL_OBS and n_val >= MLCW_MIN_VAL_OBS:
+                chosen_col = c
+                break
+        if chosen_col is None:
             return pd.Series(dtype=float)
-        return s.iloc[0] - df[deepest_col]
+        s = df[chosen_col].dropna()
+        return s.iloc[0] - df[chosen_col]
     # GNSS / DBM single-value series
     s = raw["value"] if (isinstance(raw, pd.DataFrame) and "value" in raw.columns) else raw
     s = s.dropna()
