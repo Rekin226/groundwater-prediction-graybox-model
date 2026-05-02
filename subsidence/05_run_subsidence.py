@@ -36,9 +36,23 @@ VAL_END   = pd.Timestamp("2025-03-31")
 DEFAULT_BOUNDS = {
     "Sk_e": (1e-6, 1e-2), "Sk_v": (1e-6, 1e-1),
     "h_ref": (-50.0, 50.0),    # widened; per-station tightened from h range
-    "v_tect": (-0.005, 0.005),
+    # v_tect bound is dataset-specific (see V_TECT_BOUNDS_BY_DATASET).
+    # Default is the wider GNSS bound; MLCW overrides to a tighter bound.
+    "v_tect": (-0.015, 0.015),
     "v0": (-0.005, 0.005), "v1": (-0.002, 0.002),
     "tau": (7.0, 1500.0),
+}
+# v_tect bound varies by dataset.  GNSS (daily, dense): ±0.015 m/yr — a lumped
+# regional-drift parameter that captures non-poroelastic long-term sinking
+# (mantle/isostatic creep, sub-grid storage, frame drift); cumulative-loss
+# under-prediction in v4 forced this widening.  MLCW (monthly, sparse): ±0.005
+# m/yr — tight — because the looser GNSS bound lets v_tect absorb the cal
+# trend on sparse data, leaving Sk_v unconstrained and producing val blowouts
+# (僑義國小 KGE -1.4 → -22 in v8).  Reported transparently as dataset-specific
+# regularisation; the choice is empirical, not arbitrary.
+V_TECT_BOUNDS_BY_DATASET = {
+    "ls-wra-gnss-obs": (-0.015, 0.015),
+    "ls-wra-mlcw-obs": (-0.005, 0.005),
 }
 MIN_FORM3_OBS = 36
 # DBM (Deep Borehole Marker) measures bedrock motion, not aquifer compaction.
@@ -107,11 +121,13 @@ def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
     return s.iloc[0] - s
 
 
-def _per_station_bounds(h: np.ndarray) -> dict:
+def _per_station_bounds(h: np.ndarray, sub_dataset: str = "") -> dict:
     out = dict(DEFAULT_BOUNDS)
     h_finite = h[np.isfinite(h)]
     if h_finite.size > 0:
         out["h_ref"] = (float(np.min(h_finite)) - 5.0, float(np.max(h_finite)) + 5.0)
+    if sub_dataset in V_TECT_BOUNDS_BY_DATASET:
+        out["v_tect"] = V_TECT_BOUNDS_BY_DATASET[sub_dataset]
     return out
 
 
@@ -137,6 +153,16 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     idx = h_df.index
     zeta = zeta_full.reindex(idx)
     h = h_df["h_driver"].values
+    # Re-anchor ζ_obs at the first cal-window observation so it lines up with
+    # the simulator's ζ[0]=0 anchoring at h_driver start (= cal_start).  When
+    # the obs cache extends pre-cal (MLCW now covers 2010+ after the
+    # 2010-start fetch), raw ζ_obs is anchored at 2010 — feeding that to the
+    # cal residual against a sim anchored at 2020 produces a 10+ cm offset
+    # the optimizer can only absorb pathologically.  Subtracting the first
+    # finite at-or-after CAL_START cancels that offset.
+    cal_obs = zeta.loc[(zeta.index >= CAL_START) & (zeta.index <= CAL_END)].dropna()
+    if not cal_obs.empty:
+        zeta = zeta - float(cal_obs.iloc[0])
 
     t_years = (idx - idx[0]).days.values / 365.25
     cal_mask = (idx >= CAL_START) & (idx <= CAL_END)
@@ -148,7 +174,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     n_obs_cal = int((~np.isnan(zeta.values[cal_idx])).sum())
     form3_ok = sub_dataset != "ls-wra-mlcw-obs" or n_obs_cal >= MIN_FORM3_OBS
 
-    bounds = _per_station_bounds(h)
+    bounds = _per_station_bounds(h, sub_dataset)
     try:
         fit = fit_station(h=h, zeta_obs=zeta.values, t_years=t_years,
                           cal_idx=cal_idx, val_idx=val_idx,
