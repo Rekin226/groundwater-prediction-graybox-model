@@ -46,6 +46,13 @@ MIN_FORM3_OBS = 36
 # evidenced by val α ≈ 0.001, β ≈ 0.001 (model collapses to flat-zero) for all
 # 6 DBM stations in the initial run.  Excluded from calibration.
 EXCLUDED_DATASETS = ("ls-wra-dbm-obs",)
+# Station-level data-quality exclusions.
+# LNJS: station reset / antenna swap event 2024-08-31 → 2024-11-04 introduces
+# discrete metres-scale jumps (top day-on-day Δ = 46.8 m) and a permanent
+# +5.6 m datum shift within the val window.  Cal period (2020-2022) is clean
+# but val is unrecoverable; rate = -438 cm/yr is a metadata artefact, not
+# subsidence.
+EXCLUDED_STATIONS = ("LNJS",)
 
 
 MLCW_MIN_CAL_OBS = 12   # ~1 year of monthly samples
@@ -268,6 +275,7 @@ def main(argv=None):
     master = pd.read_csv("subsidence/data/sub_station_master.csv")
     master = master[master["active"] == 1]
     master = master[~master["sub_dataset"].isin(EXCLUDED_DATASETS)]
+    master = master[~master["sub_id"].isin(EXCLUDED_STATIONS)]
     if args.station:
         master = master[master["sub_id"] == args.station]
     if master.empty:
