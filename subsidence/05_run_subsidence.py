@@ -36,11 +36,16 @@ VAL_END   = pd.Timestamp("2025-03-31")
 DEFAULT_BOUNDS = {
     "Sk_e": (1e-6, 1e-2), "Sk_v": (1e-6, 1e-1),
     "h_ref": (-50.0, 50.0),    # widened; per-station tightened from h range
-    "v_tect": (-0.05, 0.05),
-    "v0": (-0.05, 0.05), "v1": (-0.02, 0.02),
+    "v_tect": (-0.005, 0.005),
+    "v0": (-0.005, 0.005), "v1": (-0.002, 0.002),
     "tau": (7.0, 1500.0),
 }
 MIN_FORM3_OBS = 36
+# DBM (Deep Borehole Marker) measures bedrock motion, not aquifer compaction.
+# Riley/IBS poroelastic physics is a model misspecification for these stations,
+# evidenced by val α ≈ 0.001, β ≈ 0.001 (model collapses to flat-zero) for all
+# 6 DBM stations in the initial run.  Excluded from calibration.
+EXCLUDED_DATASETS = ("ls-wra-dbm-obs",)
 
 
 def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
@@ -241,6 +246,7 @@ def main(argv=None):
 
     master = pd.read_csv("subsidence/data/sub_station_master.csv")
     master = master[master["active"] == 1]
+    master = master[~master["sub_dataset"].isin(EXCLUDED_DATASETS)]
     if args.station:
         master = master[master["sub_id"] == args.station]
     if master.empty:
