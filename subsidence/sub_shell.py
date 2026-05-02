@@ -71,16 +71,22 @@ def fit_one_variant(*, h, zeta_obs, t_years, variant: str,
 
     # Build masks for cumulative and rate observations (NaN-aware).  The rate
     # obs is the first-difference of cumulative ζ, requiring two consecutive
-    # finite values; align rate to its right-edge timestamp.
+    # finite values; align rate to its right-edge timestamp.  For MLCW
+    # (monthly cadence reindexed to daily) the rate mask can be empty — fall
+    # back to cumulative-only without raising.
     finite = np.isfinite(z_cal)
+    if not finite.any():
+        raise ValueError("cal period has no finite ζ values")
     dz_obs = np.diff(z_cal)
     finite_rate = np.isfinite(dz_obs)
-    if not finite.any() or not finite_rate.any():
-        raise ValueError("cal period has no finite ζ values")
     var_z = float(np.nanvar(z_cal[finite]))
-    var_dz = float(np.nanvar(dz_obs[finite_rate]))
-    # Guard against degenerate (constant) series — fall back to cumulative-only
     eps = 1e-12
+    # Cumulative-only fallback: when no consecutive-day finite pairs exist
+    # (sparse MLCW), degrade gracefully to pure cumulative SSE.
+    if finite_rate.any():
+        var_dz = float(np.nanvar(dz_obs[finite_rate]))
+    else:
+        var_dz = 0.0
     w_cum = rate_weight / max(var_z, eps)
     w_rate = (1.0 - rate_weight) / max(var_dz, eps) if var_dz > eps else 0.0
 
