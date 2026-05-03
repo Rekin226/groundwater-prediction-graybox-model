@@ -74,3 +74,40 @@ def test_detect_jumps_returns_expected_columns(clean_series):
     assert {"date", "magnitude_m", "sigma_m", "n_sigma"}.issubset(out.columns)
     # magnitude is signed
     assert (out["magnitude_m"].abs() > 0.01).all()
+
+
+def test_count_agreeing_neighbors_one_agrees():
+    """One neighbor shows same-sign jump >4σ on the same day."""
+    from subsidence.clean_ls import count_agreeing_neighbors
+    idx = pd.date_range("2020-01-01", periods=100, freq="1D")
+    rng = np.random.default_rng(0)
+    n1 = pd.Series(np.cumsum(rng.normal(0, 0.01, len(idx))), index=idx)
+    n2 = pd.Series(np.cumsum(rng.normal(0, 0.01, len(idx))), index=idx)
+    n1.iloc[50] += 0.10  # 10 cm jump same direction as candidate
+    jump_date = idx[50]
+    n_agree = count_agreeing_neighbors(jump_date, [n1, n2], +1.0,
+                                       n_sigma=4.0, time_window_days=1)
+    assert n_agree == 1
+
+
+def test_count_agreeing_neighbors_opposite_sign_doesnt_count():
+    from subsidence.clean_ls import count_agreeing_neighbors
+    idx = pd.date_range("2020-01-01", periods=100, freq="1D")
+    rng = np.random.default_rng(0)
+    n1 = pd.Series(np.cumsum(rng.normal(0, 0.01, len(idx))), index=idx)
+    n1.iloc[50:] -= 0.10  # opposite sign (persistent level shift avoids rebound diff)
+    n_agree = count_agreeing_neighbors(idx[50], [n1], +1.0,
+                                       n_sigma=4.0, time_window_days=1)
+    assert n_agree == 0
+
+
+def test_count_agreeing_neighbors_within_time_window():
+    """Jump on D+1 (within ±1 day window) still counts."""
+    from subsidence.clean_ls import count_agreeing_neighbors
+    idx = pd.date_range("2020-01-01", periods=100, freq="1D")
+    rng = np.random.default_rng(0)
+    n1 = pd.Series(np.cumsum(rng.normal(0, 0.01, len(idx))), index=idx)
+    n1.iloc[51] += 0.10
+    n_agree = count_agreeing_neighbors(idx[50], [n1], +1.0,
+                                       n_sigma=4.0, time_window_days=1)
+    assert n_agree == 1

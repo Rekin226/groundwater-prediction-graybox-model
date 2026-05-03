@@ -49,3 +49,27 @@ def detect_jumps(z: pd.Series,
         "sigma_m": sigma,
         "n_sigma": flagged.abs().values / max(sigma, 1e-12),
     }).reset_index(drop=True)
+
+
+def count_agreeing_neighbors(jump_date: pd.Timestamp,
+                              neighbor_series: List[pd.Series],
+                              magnitude_sign: float,
+                              n_sigma: float = 4.0,
+                              time_window_days: int = 1) -> int:
+    """Count how many neighbor series show a same-sign jump > n_sigma·σ
+    within ±time_window_days of jump_date.
+    """
+    n_agree = 0
+    for n in neighbor_series:
+        sigma = compute_robust_sigma(n)
+        threshold = n_sigma * sigma
+        if threshold <= 0:
+            continue
+        dz = n.diff()
+        window_lo = jump_date - pd.Timedelta(days=time_window_days)
+        window_hi = jump_date + pd.Timedelta(days=time_window_days)
+        in_window = dz.loc[(dz.index >= window_lo) & (dz.index <= window_hi)]
+        same_sign = in_window[np.sign(in_window.values) == np.sign(magnitude_sign)]
+        if (same_sign.abs() >= threshold).any():
+            n_agree += 1
+    return n_agree
