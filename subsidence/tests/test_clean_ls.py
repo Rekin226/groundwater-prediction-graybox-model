@@ -228,3 +228,46 @@ def test_classify_jump_boundary_uncertain_near_start():
     )
     assert result["classification"] == "boundary_uncertain"
     assert result["action"] == "flag_only"
+
+
+# ---------------------------------------------------------------------------
+# apply_action tests (Task 8)
+# ---------------------------------------------------------------------------
+
+def test_apply_action_nan_event_day():
+    from subsidence.clean_ls import apply_action
+    idx = pd.date_range("2020-01-01", periods=10, freq="1D")
+    z = pd.Series(np.arange(10, dtype=float), index=idx)
+    out = apply_action(z, jump_date=idx[5], magnitude_m=0.10,
+                       action="nan_event_day")
+    assert np.isnan(out.iloc[5])
+    assert out.iloc[4] == 4.0  # unchanged
+    assert out.iloc[6] == 6.0  # unchanged
+
+
+def test_apply_action_rebaseline_subtracts_jump():
+    from subsidence.clean_ls import apply_action
+    idx = pd.date_range("2020-01-01", periods=10, freq="1D")
+    z = pd.Series(np.arange(10, dtype=float), index=idx)
+    z.iloc[5:] += 100.0  # 100m datum reset at index 5
+    out = apply_action(z, jump_date=idx[5], magnitude_m=100.0,
+                       action="rebaseline")
+    # Post-jump days should be subtracted by magnitude — back to original
+    np.testing.assert_array_equal(out.values, np.arange(10, dtype=float))
+
+
+def test_apply_action_flag_only_unchanged():
+    from subsidence.clean_ls import apply_action
+    idx = pd.date_range("2020-01-01", periods=10, freq="1D")
+    z = pd.Series(np.arange(10, dtype=float), index=idx)
+    out = apply_action(z, jump_date=idx[5], magnitude_m=0.10,
+                       action="flag_only")
+    np.testing.assert_array_equal(out.values, z.values)
+
+
+def test_apply_action_unknown_raises():
+    from subsidence.clean_ls import apply_action
+    idx = pd.date_range("2020-01-01", periods=10, freq="1D")
+    z = pd.Series(np.arange(10, dtype=float), index=idx)
+    with pytest.raises(ValueError):
+        apply_action(z, jump_date=idx[5], magnitude_m=0.10, action="bogus")

@@ -175,3 +175,23 @@ def classify_jump(z: pd.Series, *,
     else:
         out.update(classification="drift_onset", action="flag_only")
     return out
+
+
+VALID_ACTIONS = {"nan_event_day", "nan_spike_day", "rebaseline", "flag_only"}
+
+
+def apply_action(z: pd.Series, *, jump_date: pd.Timestamp,
+                  magnitude_m: float, action: str) -> pd.Series:
+    """Return modified series per the given action.
+
+    Pure function — does not mutate input.
+    """
+    if action not in VALID_ACTIONS:
+        raise ValueError(f"unknown action: {action!r}; expected one of {VALID_ACTIONS}")
+    out = z.copy()
+    if action in ("nan_event_day", "nan_spike_day"):
+        out.loc[jump_date] = np.nan
+    elif action == "rebaseline":
+        out.loc[out.index >= jump_date] -= magnitude_m
+    # flag_only: no modification
+    return out
