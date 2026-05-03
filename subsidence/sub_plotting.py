@@ -40,19 +40,41 @@ METRIC_BOX = dict(
 
 
 def _setup():
-    """Apply publication font settings."""
+    """Apply publication font settings.
+
+    CJK note: matplotlib's per-glyph fallback only works when font.family is a
+    direct list of font names — NOT when family is the generic "serif" alias
+    with CJK fonts in font.serif (verified empirically with mpl 3.10).  We list
+    Times New Roman first for Latin, then concrete CJK fonts so Chinese station
+    names (e.g. 土庫國中) render correctly.
+    """
     if _USE_RKLIB:
         setup_font()
+        # Append CJK fallbacks after rklib's primary serif setup so Chinese
+        # glyphs don't render as boxes.  Direct family list (not "serif" generic)
+        # is required for per-glyph fallback in matplotlib ≥ 3.6.
+        primary = plt.rcParams.get("font.family", ["Times New Roman"])
+        if isinstance(primary, str):
+            primary = [primary]
+        plt.rcParams["font.family"] = list(primary) + [
+            "Heiti TC",           # macOS Traditional Chinese (system font)
+            "Hiragino Sans GB",   # macOS Simplified Chinese
+            "Songti SC",          # macOS serif Chinese
+            "Arial Unicode MS",   # broad Unicode coverage
+            "Noto Sans CJK TC",   # Linux/CI fallback
+            "WenQuanYi Zen Hei",  # Linux fallback
+        ]
     else:
         plt.rcParams.update({
-            "font.family": "serif",
-            "font.serif": [
-                "Times New Roman",
-                "PingFang TC",        # macOS Traditional Chinese
-                "Heiti TC",           # macOS fallback
+            "font.family": [
+                "Times New Roman",    # Latin primary
+                "Heiti TC",           # macOS Traditional Chinese
+                "Hiragino Sans GB",   # macOS Simplified Chinese
+                "Songti SC",          # macOS serif Chinese
+                "Arial Unicode MS",   # broad Unicode coverage
                 "Noto Sans CJK TC",   # Linux/CI
                 "WenQuanYi Zen Hei",  # Linux fallback
-                "DejaVu Serif",
+                "DejaVu Serif",       # ultimate fallback
             ],
             "font.size": 10,
             "axes.titlesize": 12,
@@ -122,6 +144,15 @@ def plot_per_variant(
 
     # Observed
     ax.plot(t, zeta_obs, color="black", lw=1.0, alpha=0.85, label="Observed")
+
+    # Buffer-year segment between cal and val: subdued dotted (sim is continuous,
+    # this region just isn't being evaluated).  Plot first so cal/val overlay it.
+    if cal_idx.size and val_idx.size:
+        buf_lo = int(cal_idx[-1]) + 1
+        buf_hi = int(val_idx[0])
+        if buf_lo < buf_hi:
+            ax.plot(t[buf_lo:buf_hi], sim[buf_lo:buf_hi], color=color, lw=1.2,
+                    alpha=0.5, ls=":", label=f"{variant} – buffer")
 
     # Simulated cal / val
     if cal_idx.size:
@@ -200,12 +231,19 @@ def plot_comparison(
             best_variant = v
 
     # Plot each variant
+    buf_lo = int(cal_idx[-1]) + 1 if cal_idx.size else None
+    buf_hi = int(val_idx[0]) if val_idx.size else None
+    has_buffer = (buf_lo is not None and buf_hi is not None and buf_lo < buf_hi)
     for v, f in fits.items():
         sim = f["sim_full"]
         c = VARIANT_COLOR.get(v, "tab:gray")
         is_best = (v == best_variant)
         lw = 2.0 if is_best else 1.2
         alpha = 1.0 if is_best else 0.75
+        # Buffer-year segment (subdued dotted; plotted first so cal/val overlay)
+        if has_buffer:
+            ax.plot(t[buf_lo:buf_hi], sim[buf_lo:buf_hi], color=c, lw=lw*0.7,
+                    alpha=alpha*0.5, ls=":")
         if cal_idx.size:
             ax.plot(t[cal_idx], sim[cal_idx], color=c, lw=lw, alpha=alpha, ls="-")
         if val_idx.size:
