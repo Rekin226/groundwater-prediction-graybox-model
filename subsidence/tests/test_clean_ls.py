@@ -111,3 +111,120 @@ def test_count_agreeing_neighbors_within_time_window():
     n_agree = count_agreeing_neighbors(idx[50], [n1], +1.0,
                                        n_sigma=4.0, time_window_days=1)
     assert n_agree == 1
+
+
+# ---------------------------------------------------------------------------
+# classify_jump tests (Task 7)
+# ---------------------------------------------------------------------------
+
+def _build_z_with_step(step_at_idx, step_m, n=200, sigma=0.0001, seed=0):
+    """Helper: clean series + sustained step starting at step_at_idx."""
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2020-01-01", periods=n, freq="1D")
+    z = np.cumsum(rng.normal(0, sigma, len(idx)))
+    z[step_at_idx:] += step_m
+    return pd.Series(z, index=idx)
+
+
+def test_classify_jump_co_seismic_when_eq_match():
+    from subsidence.clean_ls import classify_jump, compute_robust_sigma
+    z = _build_z_with_step(100, 0.10)
+    cat = pd.DataFrame({
+        "time": pd.to_datetime(["2020-04-10T00:00:00"]),
+        "latitude": [23.78], "longitude": [120.39],
+        "depth": [10.0], "mag": [6.0], "id": ["E1"],
+    })
+    result = classify_jump(
+        z, jump_date=z.index[100], magnitude_m=0.10,
+        sigma=compute_robust_sigma(z),
+        station_lat_lon=(23.78, 120.39),
+        eq_catalog=cat, neighbor_series=[],
+    )
+    assert result["classification"] == "co_seismic"
+    assert result["action"] == "nan_event_day"
+    assert result["eq_id"] == "E1"
+
+
+def test_classify_jump_regional_when_neighbors_agree():
+    from subsidence.clean_ls import classify_jump, compute_robust_sigma
+    z = _build_z_with_step(100, 0.10)
+    n1 = _build_z_with_step(100, 0.08)
+    n2 = _build_z_with_step(100, 0.06)
+    result = classify_jump(
+        z, jump_date=z.index[100], magnitude_m=0.10,
+        sigma=compute_robust_sigma(z),
+        station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[n1, n2],
+    )
+    assert result["classification"] == "regional_event"
+    assert result["action"] == "nan_event_day"
+
+
+def test_classify_jump_glitch_snapback():
+    """Single-day spike that returns to baseline."""
+    from subsidence.clean_ls import classify_jump, compute_robust_sigma
+    rng = np.random.default_rng(0)
+    idx = pd.date_range("2020-01-01", periods=200, freq="1D")
+    z = pd.Series(np.cumsum(rng.normal(0, 0.01, len(idx))), index=idx)
+    z.iloc[100] += 0.10  # spike on day 100 only — snaps back day 101+
+    result = classify_jump(
+        z, jump_date=z.index[100], magnitude_m=0.10,
+        sigma=compute_robust_sigma(z),
+        station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    assert result["classification"] == "glitch"
+    assert result["action"] == "nan_spike_day"
+
+
+def test_classify_jump_datum_reset_parallel_slopes():
+    """Sustained step, post-jump slope ≈ pre-jump slope."""
+    from subsidence.clean_ls import classify_jump, compute_robust_sigma
+    z = _build_z_with_step(100, 0.10)  # sustained step, no slope change
+    result = classify_jump(
+        z, jump_date=z.index[100], magnitude_m=0.10,
+        sigma=compute_robust_sigma(z),
+        station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    assert result["classification"] == "datum_reset"
+    assert result["action"] == "rebaseline"
+
+
+def test_classify_jump_drift_onset_diverging_slopes():
+    """Sustained step + clear slope change post-jump."""
+    from subsidence.clean_ls import classify_jump, compute_robust_sigma
+    rng = np.random.default_rng(0)
+    n = 200
+    idx = pd.date_range("2020-01-01", periods=n, freq="1D")
+    z = np.cumsum(rng.normal(0, 0.01, n))
+    z[100:] += 0.10
+    z[100:] += np.linspace(0, 0.05, n - 100)  # 5cm/100d post-jump drift
+    result = classify_jump(
+        pd.Series(z, index=idx), jump_date=idx[100], magnitude_m=0.10,
+        sigma=compute_robust_sigma(pd.Series(z, index=idx)),
+        station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    assert result["classification"] == "drift_onset"
+    assert result["action"] == "flag_only"
+
+
+def test_classify_jump_boundary_uncertain_near_start():
+    from subsidence.clean_ls import classify_jump, compute_robust_sigma
+    # Jump at idx 5 in a 50-day series → only 5 days of pre-window
+    # (slope_window_days=30 default) → boundary_uncertain.
+    z = _build_z_with_step(5, 0.10, n=50)
+    result = classify_jump(
+        z, jump_date=z.index[5], magnitude_m=0.10,
+        sigma=compute_robust_sigma(z),
+        station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    assert result["classification"] == "boundary_uncertain"
+    assert result["action"] == "flag_only"
