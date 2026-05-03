@@ -26,3 +26,62 @@ def test_haversine_km_array_target():
     assert d.shape == (2,)
     assert d[0] == pytest.approx(0.0, abs=1e-6)
     assert 140.0 <= d[1] <= 200.0  # ~150-180 km
+
+
+from unittest.mock import patch
+
+
+_USGS_CSV_FIXTURE = b"""time,latitude,longitude,depth,mag,id
+2024-04-02T23:58:11.000Z,23.819,121.6624,34.8,7.4,us7000m9g4
+2022-09-17T13:41:19.000Z,23.0925,121.1685,7.0,6.5,us7000i5lq
+"""
+
+
+def test_load_catalog_downloads_when_cache_missing(tmp_path):
+    from subsidence.eq_catalog import load_catalog
+    cache = tmp_path / "eq_catalog.csv"
+
+    class FakeResp:
+        def __init__(self, b): self._b = b
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._b
+
+    with patch("subsidence.eq_catalog.urllib.request.urlopen",
+               return_value=FakeResp(_USGS_CSV_FIXTURE)):
+        df = load_catalog(cache_path=cache)
+
+    assert cache.exists()
+    assert len(df) == 2
+    assert {"time", "latitude", "longitude", "depth", "mag", "id"}.issubset(df.columns)
+    assert df.iloc[0]["mag"] == 7.4
+
+
+def test_load_catalog_uses_cache_when_present(tmp_path):
+    from subsidence.eq_catalog import load_catalog
+    cache = tmp_path / "eq_catalog.csv"
+    cache.write_bytes(_USGS_CSV_FIXTURE)
+
+    with patch("subsidence.eq_catalog.urllib.request.urlopen") as m:
+        df = load_catalog(cache_path=cache)
+        assert m.call_count == 0   # no network call
+
+    assert len(df) == 2
+
+
+def test_load_catalog_refresh_overrides_cache(tmp_path):
+    from subsidence.eq_catalog import load_catalog
+    cache = tmp_path / "eq_catalog.csv"
+    cache.write_bytes(b"time,latitude,longitude,depth,mag,id\n")  # empty cache
+
+    class FakeResp:
+        def __init__(self, b): self._b = b
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._b
+
+    with patch("subsidence.eq_catalog.urllib.request.urlopen",
+               return_value=FakeResp(_USGS_CSV_FIXTURE)):
+        df = load_catalog(cache_path=cache, refresh=True)
+
+    assert len(df) == 2
