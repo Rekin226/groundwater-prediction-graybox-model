@@ -195,3 +195,69 @@ def apply_action(z: pd.Series, *, jump_date: pd.Timestamp,
         out.loc[out.index >= jump_date] -= magnitude_m
     # flag_only: no modification
     return out
+
+
+def clean_station(*, z: pd.Series,
+                   station_lat_lon: Tuple[float, float],
+                   eq_catalog: pd.DataFrame,
+                   neighbor_series: List[pd.Series],
+                   n_sigma: float = 6.0,
+                   sigma_floor_cm: float = 1.0,
+                   max_iterations: int = 20,
+                   **classify_kwargs,
+                   ) -> Tuple[pd.Series, pd.DataFrame]:
+    """Iteratively detect → classify → apply until no jumps remain.
+
+    Returns: (cleaned_series, qc_dataframe).
+    QC dataframe columns: jump_date, magnitude_m, sigma_m, n_sigma,
+    classification, action, eq_id, eq_distance_km, eq_magnitude, eq_depth_km,
+    n_neighbors_agree, slope_pre_cmyr, slope_post_cmyr.
+    """
+    z_curr = z.copy()
+    qc_rows: List[Dict[str, Any]] = []
+
+    for iteration in range(max_iterations):
+        jumps = detect_jumps(z_curr, n_sigma=n_sigma, sigma_floor_cm=sigma_floor_cm)
+        if jumps.empty:
+            break
+        # Process the EARLIEST jump first (so subsequent σ recomputation is meaningful)
+        first = jumps.sort_values("date").iloc[0]
+        result = classify_jump(
+            z=z_curr,
+            jump_date=first["date"],
+            magnitude_m=float(first["magnitude_m"]),
+            sigma=float(first["sigma_m"]),
+            station_lat_lon=station_lat_lon,
+            eq_catalog=eq_catalog,
+            neighbor_series=neighbor_series,
+            **classify_kwargs,
+        )
+        qc_rows.append({
+            "jump_date": first["date"],
+            "magnitude_m": float(first["magnitude_m"]),
+            "sigma_m": float(first["sigma_m"]),
+            "n_sigma": float(first["n_sigma"]),
+            **result,
+        })
+        if result["action"] == "flag_only":
+            # Don't iterate on flag_only — it'd loop forever. Mark and skip.
+            # Strategy: temporarily NaN the day so we don't re-detect this jump,
+            # then restore at the end via the flag_only_dates set.
+            qc_rows[-1]["_skip"] = True
+            z_curr = z_curr.copy()
+            z_curr.loc[first["date"]] = np.nan
+        else:
+            z_curr = apply_action(z_curr,
+                                  jump_date=first["date"],
+                                  magnitude_m=float(first["magnitude_m"]),
+                                  action=result["action"])
+
+    # Restore flag_only days that were temporarily NaN'd for iteration
+    flag_only_dates = [r["jump_date"] for r in qc_rows if r.get("_skip")]
+    for d in flag_only_dates:
+        z_curr.loc[d] = z.loc[d]
+    for r in qc_rows:
+        r.pop("_skip", None)
+
+    qc = pd.DataFrame(qc_rows)
+    return z_curr, qc

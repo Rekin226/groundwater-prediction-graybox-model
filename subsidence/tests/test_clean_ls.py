@@ -271,3 +271,50 @@ def test_apply_action_unknown_raises():
     z = pd.Series(np.arange(10, dtype=float), index=idx)
     with pytest.raises(ValueError):
         apply_action(z, jump_date=idx[5], magnitude_m=0.10, action="bogus")
+
+
+# ---------------------------------------------------------------------------
+# clean_station tests (Task 9)
+# ---------------------------------------------------------------------------
+
+def test_clean_station_clean_input_no_changes(clean_series):
+    from subsidence.clean_ls import clean_station
+    out_z, qc = clean_station(
+        z=clean_series, station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    np.testing.assert_array_equal(out_z.values, clean_series.values)
+    assert len(qc) == 0
+
+
+def test_clean_station_handles_single_datum_reset():
+    from subsidence.clean_ls import clean_station
+    z = _build_z_with_step(100, 0.50)  # 50cm sustained step
+    out_z, qc = clean_station(
+        z=z, station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    assert len(qc) == 1
+    assert qc.iloc[0]["classification"] == "datum_reset"
+    assert qc.iloc[0]["action"] == "rebaseline"
+    # After rebaseline, post-jump days should align with pre-jump trajectory
+    assert abs(out_z.iloc[101] - out_z.iloc[99]) < 0.05  # within ~σ
+
+
+def test_clean_station_iterates_multiple_jumps():
+    """Two sustained steps should both be detected (iteration after rebaseline)."""
+    from subsidence.clean_ls import clean_station
+    rng = np.random.default_rng(0)
+    n = 400
+    idx = pd.date_range("2020-01-01", periods=n, freq="1D")
+    z = np.cumsum(rng.normal(0, 0.0001, n))  # use the same low-noise scale as Task 7
+    z[100:] += 0.20    # first step
+    z[300:] += -0.30   # second step
+    out_z, qc = clean_station(
+        z=pd.Series(z, index=idx), station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    assert len(qc) >= 2
