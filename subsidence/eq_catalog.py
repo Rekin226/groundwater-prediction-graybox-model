@@ -84,3 +84,35 @@ def load_catalog(cache_path: Path = Path("data/eq_catalog.csv"),
     if "time" in df.columns:
         df["time"] = pd.to_datetime(df["time"], utc=True, errors="coerce").dt.tz_localize(None)
     return df
+
+
+def match_jump_to_event(station_lat_lon: Tuple[float, float],
+                         jump_date: pd.Timestamp,
+                         catalog: pd.DataFrame,
+                         distance_km: float = 50.0,
+                         max_depth_km: float = 30.0,
+                         time_window_days: int = 2,
+                         min_magnitude: float = 5.0) -> Optional[pd.Series]:
+    """Return the qualifying catalog row closest in time to jump_date, or None.
+
+    Filters: distance ≤ distance_km, depth ≤ max_depth_km, |Δt| ≤ time_window_days,
+    magnitude ≥ min_magnitude.
+    """
+    if catalog.empty:
+        return None
+    coords = catalog[["latitude", "longitude"]].to_numpy(dtype=float)
+    dist = haversine_km(station_lat_lon, coords)
+    dt_days = (catalog["time"] - jump_date).abs().dt.total_seconds() / 86400.0
+    mask = (
+        (dist <= distance_km) &
+        (catalog["depth"] <= max_depth_km) &
+        (catalog["mag"] >= min_magnitude) &
+        (dt_days <= float(time_window_days))
+    )
+    if not mask.any():
+        return None
+    sub = catalog[mask].copy()
+    sub["_dt_days"] = dt_days[mask]
+    sub["_dist_km"] = dist[mask]
+    sub = sub.sort_values("_dt_days").reset_index(drop=True)
+    return sub.iloc[0]
