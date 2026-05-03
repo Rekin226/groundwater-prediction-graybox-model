@@ -140,9 +140,9 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     h_df = pd.read_parquet(h_path)
     # URL-encode sub_id for cache file lookup (MLCW station names are Chinese)
     sid_encoded = urllib.parse.quote(str(sub_id), safe="")
-    obs_path = Path(f"data/ls_cache/{sub_dataset}__{sid_encoded}.parquet")
+    obs_path = Path(f"data/ls_cache/clean/{sub_dataset}__{sid_encoded}.parquet")
     if not obs_path.exists():
-        return f"  {sub_id}: no observations; skip"
+        return f"  {sub_id}: no cleaned observations; run 03b_clean_ls.py first"
     raw = pd.read_parquet(obs_path)
     # Daily resample for DBM (hourly raw)
     if sub_dataset == "ls-wra-dbm-obs":
