@@ -27,3 +27,25 @@ def compute_robust_sigma(z: pd.Series) -> float:
     median_dz = dz.median()
     mad = (dz - median_dz).abs().median()
     return float(MAD_TO_SIGMA * mad)
+
+
+def detect_jumps(z: pd.Series,
+                 n_sigma: float = 6.0,
+                 sigma_floor_cm: float = 1.0) -> pd.DataFrame:
+    """Detect jump candidates: |Δζ| ≥ max(n_sigma·σ, sigma_floor_cm/100).
+
+    Returns DataFrame with columns: date, magnitude_m (signed), sigma_m, n_sigma.
+    """
+    sigma = compute_robust_sigma(z)
+    threshold_m = max(n_sigma * sigma, sigma_floor_cm / 100.0)
+    dz = z.diff()
+    flags = dz.abs() >= threshold_m
+    flagged = dz[flags]
+    if flagged.empty:
+        return pd.DataFrame(columns=["date", "magnitude_m", "sigma_m", "n_sigma"])
+    return pd.DataFrame({
+        "date": flagged.index,
+        "magnitude_m": flagged.values,
+        "sigma_m": sigma,
+        "n_sigma": flagged.abs().values / max(sigma, 1e-12),
+    }).reset_index(drop=True)

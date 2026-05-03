@@ -38,3 +38,39 @@ def test_compute_robust_sigma_handles_nans(clean_series):
     z.iloc[50:60] = np.nan
     sigma = compute_robust_sigma(z)
     assert sigma > 0  # should not crash, returns finite estimate
+
+
+def test_detect_jumps_clean_series(clean_series):
+    from subsidence.clean_ls import detect_jumps
+    out = detect_jumps(clean_series, n_sigma=6.0, sigma_floor_cm=1.0)
+    assert len(out) == 0
+
+
+def test_detect_jumps_finds_injected_spike(clean_series):
+    from subsidence.clean_ls import detect_jumps
+    spiked = clean_series.copy()
+    spike_date = spiked.index[200]
+    spiked.iloc[200] += 0.20  # 20 cm spike
+    out = detect_jumps(spiked, n_sigma=6.0, sigma_floor_cm=1.0)
+    assert len(out) >= 1
+    assert spike_date in set(out["date"])
+
+
+def test_detect_jumps_respects_sigma_floor():
+    """A near-zero-σ series shouldn't flag every point — floor protects it."""
+    from subsidence.clean_ls import detect_jumps
+    idx = pd.date_range("2020-01-01", periods=100, freq="1D")
+    z = pd.Series(np.linspace(0, 1, 100) * 0.001, index=idx)  # σ ≈ 0
+    z.iloc[50] += 0.005  # 0.5 cm — would exceed 6σ but below 1cm floor
+    out = detect_jumps(z, n_sigma=6.0, sigma_floor_cm=1.0)
+    assert len(out) == 0
+
+
+def test_detect_jumps_returns_expected_columns(clean_series):
+    from subsidence.clean_ls import detect_jumps
+    spiked = clean_series.copy()
+    spiked.iloc[200] += 0.20
+    out = detect_jumps(spiked, n_sigma=6.0, sigma_floor_cm=1.0)
+    assert {"date", "magnitude_m", "sigma_m", "n_sigma"}.issubset(out.columns)
+    # magnitude is signed
+    assert (out["magnitude_m"].abs() > 0.01).all()
