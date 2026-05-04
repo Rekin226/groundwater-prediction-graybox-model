@@ -67,3 +67,32 @@ def test_gap_fill_preserves_observed():
     assert np.all(np.isfinite(y_filled[mask]))
     # Mask matches original NaN pattern
     np.testing.assert_array_equal(mask, np.isnan(y))
+
+
+def test_gap_fill_recovers_known_signal():
+    """Synthetic linear-trend + annual-cycle signal: GPR posterior mean
+    in a 60-day knockout window matches truth within 2σ everywhere.
+    """
+    n = 1500  # ~4 years daily
+    t = _make_t(n)
+    t_days = np.arange(n, dtype=float)
+    truth = (
+        0.001 * t_days
+        + 0.005 * np.sin(2 * np.pi * t_days / 365.25)
+    )
+    rng = np.random.default_rng(2)
+    y = truth + rng.normal(0, 0.0005, n)
+
+    # Knock out a 60-day window in the middle (well-supported on both sides).
+    gap_start, gap_end = 700, 760
+    y[gap_start:gap_end] = np.nan
+
+    y_filled, sigma, mask = gpr_fill(t, y)
+
+    err = np.abs(y_filled[gap_start:gap_end] - truth[gap_start:gap_end])
+    band = 2.0 * sigma[gap_start:gap_end]
+    n_outside = int((err > band).sum())
+    # Allow ≤5% of in-gap points to fall outside ±2σ (statistical headroom).
+    assert n_outside <= 3, (
+        f"{n_outside}/60 in-gap points outside ±2σ; max err = {err.max():.4e}"
+    )
