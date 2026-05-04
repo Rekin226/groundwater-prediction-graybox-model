@@ -124,3 +124,39 @@ def test_optimizer_receives_raw_zeta_not_imputed(tmp_path, monkeypatch):
     # Secondary: NaN must still be present (sanity that the raw array we
     # reconstructed is the correct comparator).
     assert np.isnan(z).any(), "captured zeta_obs has no NaN"
+
+
+def test_csv_byte_identical_with_gpr_fill_noop(tmp_path, monkeypatch):
+    """Replacing gpr_fill with a no-op (returning defensive-fallback values
+    that contain no imputation) must produce the SAME per-station CSV as
+    a normal run. If they differ, gpr_fill output is leaking into the fit.
+    """
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
+    sub_id, sub_dataset = "LYES", "ls-wra-gnss-obs"
+
+    # --- Run A: real gpr_fill ---
+    run_id_a = "_byte_test_real_gpr"
+    if Path(f"workspace/results_sub/{run_id_a}").exists():
+        shutil.rmtree(f"workspace/results_sub/{run_id_a}")
+    sub_runner._process(sub_id, sub_dataset, run_id_a)
+
+    # --- Run B: gpr_fill replaced by a no-op that returns the defensive
+    # fallback (raw y, NaN sigma, isnan mask). The optimizer sees identical
+    # raw arrays in both runs → CSV must match byte-for-byte.
+    def noop_gpr_fill(t, y):
+        y = np.asarray(y, dtype=float)
+        return y.copy(), np.full_like(y, np.nan), np.isnan(y)
+
+    run_id_b = "_byte_test_noop_gpr"
+    if Path(f"workspace/results_sub/{run_id_b}").exists():
+        shutil.rmtree(f"workspace/results_sub/{run_id_b}")
+
+    monkeypatch.setattr(sub_runner, "gpr_fill", noop_gpr_fill)
+    sub_runner._process(sub_id, sub_dataset, run_id_b)
+
+    csv_a = Path(f"workspace/results_sub/{run_id_a}/per_station/{sub_id}.csv").read_bytes()
+    csv_b = Path(f"workspace/results_sub/{run_id_b}/per_station/{sub_id}.csv").read_bytes()
+    assert csv_a == csv_b, (
+        "per-station CSV differs between real-gpr_fill and noop-gpr_fill runs — "
+        "gpr_fill output is leaking into the optimizer."
+    )
