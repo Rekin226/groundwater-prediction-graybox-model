@@ -117,44 +117,60 @@ def plot_per_variant(
     val_idx: np.ndarray,
     metrics: dict,
     out_path: Path,
+    *,
+    zeta_filled: np.ndarray | None = None,
+    zeta_sigma: np.ndarray | None = None,
+    imputed_mask: np.ndarray | None = None,
 ):
-    """One plot per variant — observed black, cal+val sim in variant color (cal solid, val dashed).
+    """One plot per variant — observed black, cal+val sim in variant color.
 
-    Parameters
-    ----------
-    sub_id : station identifier (used for title)
-    variant : one of M1/M2/M3_tau/M4_tau
-    t : full DatetimeIndex (length N)
-    zeta_obs : observed cumulative subsidence array (length N)
-    sim : simulated cumulative subsidence array (length N)
-    cal_idx : integer indices into t for the calibration period
-    val_idx : integer indices into t for the validation period
-    metrics : dict with keys like kge_cal, kge_val, rmse_val, kge_rate_val
-    out_path : output TIFF path
+    When zeta_filled/zeta_sigma/imputed_mask are passed, the observed line
+    is rendered in two passes (black for real, muted purple #7e57c2 for
+    imputed) with a ±1σ envelope over imputed regions.
     """
     _setup()
     fig, ax = plt.subplots(figsize=(9, 4.5))
     color = VARIANT_COLOR.get(variant, "tab:gray")
 
-    # Shade cal/val periods
+    # Cal / val / buffer shading
     if cal_idx.size:
         ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0)
     if val_idx.size:
         ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0)
-
-    # Observed
-    ax.plot(t, zeta_obs, color="black", lw=1.0, alpha=0.85, label="Observed")
-
-    # Buffer-year segment between cal and val: subdued dotted (sim is continuous,
-    # this region just isn't being evaluated).  Plot first so cal/val overlay it.
     if cal_idx.size and val_idx.size:
-        buf_lo = int(cal_idx[-1]) + 1
-        buf_hi = int(val_idx[0])
+        buf_lo = t[int(cal_idx[-1])] + pd.Timedelta(days=1)
+        buf_hi = t[int(val_idx[0])]  - pd.Timedelta(days=1)
         if buf_lo < buf_hi:
-            ax.plot(t[buf_lo:buf_hi], sim[buf_lo:buf_hi], color=color, lw=1.2,
-                    alpha=0.5, ls=":", label=f"{variant} – buffer")
+            ax.axvspan(buf_lo, buf_hi, color="#bdbdbd", alpha=0.15,
+                       zorder=0, label="Buffer (excluded)")
 
-    # Simulated cal / val
+    # Observed (real + imputed two-pass when imputation provided)
+    if zeta_filled is not None and imputed_mask is not None:
+        y_obs_only = np.where(imputed_mask, np.nan, zeta_filled)
+        y_imp_only = np.where(imputed_mask, zeta_filled, np.nan)
+        ax.plot(t, y_obs_only, color="black", lw=1.0, alpha=0.85, label="Observed")
+        ax.plot(t, y_imp_only, color="#7e57c2", lw=1.0, alpha=0.95,
+                label="GPR-imputed ±1σ")
+        if zeta_sigma is not None and np.any(np.isfinite(zeta_sigma)):
+            ax.fill_between(
+                t,
+                zeta_filled - zeta_sigma,
+                zeta_filled + zeta_sigma,
+                where=imputed_mask,
+                color="#7e57c2", alpha=0.20, linewidth=0, zorder=1,
+            )
+    else:
+        ax.plot(t, zeta_obs, color="black", lw=1.0, alpha=0.85, label="Observed")
+
+    # Buffer-year sim segment (subdued dotted; plotted before cal/val so they overlay)
+    if cal_idx.size and val_idx.size:
+        buf_lo_i = int(cal_idx[-1]) + 1
+        buf_hi_i = int(val_idx[0])
+        if buf_lo_i < buf_hi_i:
+            ax.plot(t[buf_lo_i:buf_hi_i], sim[buf_lo_i:buf_hi_i], color=color,
+                    lw=1.2, alpha=0.5, ls=":", label=f"{variant} – buffer")
+
+    # Sim cal / val
     if cal_idx.size:
         ax.plot(t[cal_idx], sim[cal_idx], color=color, lw=1.8,
                 alpha=0.95, ls="-", label=f"{variant} – cal")
@@ -164,8 +180,7 @@ def plot_per_variant(
 
     # Split line
     if cal_idx.size and val_idx.size:
-        split_t = t[val_idx[0]]
-        ax.axvline(split_t, color="black", ls="--", lw=1.2, alpha=0.8)
+        ax.axvline(t[val_idx[0]], color="black", ls="--", lw=1.2, alpha=0.8)
 
     # Metrics annotation
     kge_cal  = metrics.get("kge_cal",      float("nan"))
@@ -187,6 +202,8 @@ def plot_per_variant(
     ax.legend(loc="lower left", framealpha=0.85)
     ax.grid(True, lw=0.3, alpha=0.4)
     _fmt_xaxis(ax)
+    ax.set_xlim(t[0], t[-1])
+    ax.margins(x=0)
     fig.tight_layout()
     _save(fig, out_path)
 
