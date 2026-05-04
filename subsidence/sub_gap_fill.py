@@ -59,7 +59,9 @@ def gpr_fill(
         y_filled is a copy of y with its NaN cells unchanged.
     sigma : ndarray, shape (N,)
         Posterior standard deviation at every t. NaN if fit was
-        skipped (too few observations).
+        skipped (too few observations). Otherwise floored at
+        ``max(SIGMA_FLOOR_M, 0.01 * std(y_obs))`` so fill_between
+        envelopes stay visible at observation points.
     imputed_mask : ndarray of bool, shape (N,)
         True where the original y was NaN (i.e. GP-filled).
     """
