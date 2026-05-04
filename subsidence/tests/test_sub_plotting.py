@@ -62,3 +62,28 @@ def test_plot_per_variant_accepts_imputation_kwargs(tmp_path: Path):
     )
 
     assert (tmp_path / "imp.tiff").exists()
+
+
+def test_plot_comparison_renders_with_imputation(tmp_path: Path):
+    t, zeta_obs, sim, cal_idx, val_idx = _synthetic_inputs()
+    zeta_filled = zeta_obs.copy()
+    imputed_mask = np.zeros(len(t), dtype=bool)
+    imputed_mask[700:760] = True
+    zeta_obs[imputed_mask] = np.nan
+    zeta_sigma = np.full(len(t), 0.001)
+
+    fits = {
+        "M1": {"sim_full": sim, "kge_cal": 0.9, "kge_val": 0.8,
+               "rmse_val": 0.01, "kge_rate_val": 0.5},
+        "M2": {"sim_full": sim * 1.05, "kge_cal": 0.85, "kge_val": 0.7,
+               "rmse_val": 0.012, "kge_rate_val": 0.4},
+    }
+
+    plot_comparison(
+        sub_id="TEST", t=t, zeta_obs=zeta_obs, fits=fits,
+        cal_idx=cal_idx, val_idx=val_idx,
+        out_path=tmp_path / "cmp.tiff",
+        zeta_filled=zeta_filled, zeta_sigma=zeta_sigma,
+        imputed_mask=imputed_mask,
+    )
+    assert (tmp_path / "cmp.tiff").exists()

@@ -216,6 +216,10 @@ def plot_comparison(
     cal_idx: np.ndarray,
     val_idx: np.ndarray,
     out_path: Path,
+    *,
+    zeta_filled: np.ndarray | None = None,
+    zeta_sigma: np.ndarray | None = None,
+    imputed_mask: np.ndarray | None = None,
 ):
     """All fitted variants overlaid; metrics table beneath; best variant asterisked.
 
@@ -234,9 +238,30 @@ def plot_comparison(
         ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0)
     if val_idx.size:
         ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0)
+    if cal_idx.size and val_idx.size:
+        buf_lo = t[int(cal_idx[-1])] + pd.Timedelta(days=1)
+        buf_hi = t[int(val_idx[0])]  - pd.Timedelta(days=1)
+        if buf_lo < buf_hi:
+            ax.axvspan(buf_lo, buf_hi, color="#bdbdbd", alpha=0.15,
+                       zorder=0, label="Buffer (excluded)")
 
-    # Observed
-    ax.plot(t, zeta_obs, color="black", lw=1.2, alpha=0.9, label="Observed", zorder=3)
+    # Observed (real + imputed two-pass when imputation provided)
+    if zeta_filled is not None and imputed_mask is not None:
+        y_obs_only = np.where(imputed_mask, np.nan, zeta_filled)
+        y_imp_only = np.where(imputed_mask, zeta_filled, np.nan)
+        ax.plot(t, y_obs_only, color="black", lw=1.2, alpha=0.9, label="Observed", zorder=3)
+        ax.plot(t, y_imp_only, color="#7e57c2", lw=1.2, alpha=0.95,
+                label="GPR-imputed ±1σ", zorder=3)
+        if zeta_sigma is not None and np.any(np.isfinite(zeta_sigma)):
+            ax.fill_between(
+                t,
+                zeta_filled - zeta_sigma,
+                zeta_filled + zeta_sigma,
+                where=imputed_mask,
+                color="#7e57c2", alpha=0.20, linewidth=0, zorder=1,
+            )
+    else:
+        ax.plot(t, zeta_obs, color="black", lw=1.2, alpha=0.9, label="Observed", zorder=3)
 
     # Identify best variant by kge_val
     best_kge_val = -np.inf
@@ -301,6 +326,8 @@ def plot_comparison(
         tbl[(0, j)].set_facecolor("#e8e8e8")
         tbl[(0, j)].set_text_props(weight="bold")
 
+    ax.set_xlim(t[0], t[-1])
+    ax.margins(x=0)
     fig.tight_layout()
     _save(fig, out_path)
 
