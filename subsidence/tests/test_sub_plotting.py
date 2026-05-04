@@ -87,3 +87,24 @@ def test_plot_comparison_renders_with_imputation(tmp_path: Path):
         imputed_mask=imputed_mask,
     )
     assert (tmp_path / "cmp.tiff").exists()
+
+
+def test_plot_full_subplots_with_cal_val_and_imputation(tmp_path: Path):
+    t, zeta_obs, sim, cal_idx, val_idx = _synthetic_inputs()
+    h_driver = -30.0 + 5.0 * np.sin(np.arange(len(t)) * 2 * np.pi / 365.25)
+    zeta_filled = zeta_obs.copy()
+    imputed_mask = np.zeros(len(t), dtype=bool)
+    imputed_mask[700:760] = True
+    zeta_obs[imputed_mask] = np.nan
+    zeta_sigma = np.full(len(t), 0.001)
+
+    plot_full_subplots(
+        sub_id="TEST", t=t,
+        zeta_obs=zeta_obs, sim_best=sim,
+        h_driver=h_driver, driver_source=None, rainfall=None,
+        out_path=tmp_path / "full.tiff",
+        cal_idx=cal_idx, val_idx=val_idx,
+        zeta_filled=zeta_filled, zeta_sigma=zeta_sigma,
+        imputed_mask=imputed_mask,
+    )
+    assert (tmp_path / "full.tiff").exists()

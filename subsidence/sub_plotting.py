@@ -341,6 +341,12 @@ def plot_full_subplots(
     driver_source,
     rainfall,
     out_path: Path,
+    *,
+    cal_idx: np.ndarray | None = None,
+    val_idx: np.ndarray | None = None,
+    zeta_filled: np.ndarray | None = None,
+    zeta_sigma: np.ndarray | None = None,
+    imputed_mask: np.ndarray | None = None,
 ):
     """3-panel overview: ζ (best variant), h_driver shaded by source, rainfall (optional).
 
@@ -348,6 +354,8 @@ def plot_full_subplots(
     ----------
     driver_source : array-like of strings (same length as t) or None
     rainfall : array-like or None — if None, the rainfall panel is omitted
+    cal_idx, val_idx : optional index arrays for cal/val shading
+    zeta_filled, zeta_sigma, imputed_mask : optional GPR-imputation arrays
     """
     _setup()
     n_panels = 3 if rainfall is not None else 2
@@ -363,7 +371,37 @@ def plot_full_subplots(
 
     # ---- Panel (a): ζ observed + best sim ----
     ax0 = axes[0]
-    ax0.plot(t, zeta_obs, color="black", lw=1.0, alpha=0.85, label="Observed")
+
+    # Cal / val / buffer shading on top panel
+    if cal_idx is not None and cal_idx.size:
+        ax0.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0)
+    if val_idx is not None and val_idx.size:
+        ax0.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0)
+    if cal_idx is not None and cal_idx.size and val_idx is not None and val_idx.size:
+        buf_lo = t[int(cal_idx[-1])] + pd.Timedelta(days=1)
+        buf_hi = t[int(val_idx[0])]  - pd.Timedelta(days=1)
+        if buf_lo < buf_hi:
+            ax0.axvspan(buf_lo, buf_hi, color="#bdbdbd", alpha=0.15,
+                        zorder=0, label="Buffer (excluded)")
+
+    # Observed (real + imputed two-pass when imputation provided)
+    if zeta_filled is not None and imputed_mask is not None:
+        y_obs_only = np.where(imputed_mask, np.nan, zeta_filled)
+        y_imp_only = np.where(imputed_mask, zeta_filled, np.nan)
+        ax0.plot(t, y_obs_only, color="black", lw=1.0, alpha=0.85, label="Observed")
+        ax0.plot(t, y_imp_only, color="#7e57c2", lw=1.0, alpha=0.95,
+                 label="GPR-imputed ±1σ")
+        if zeta_sigma is not None and np.any(np.isfinite(zeta_sigma)):
+            ax0.fill_between(
+                t,
+                zeta_filled - zeta_sigma,
+                zeta_filled + zeta_sigma,
+                where=imputed_mask,
+                color="#7e57c2", alpha=0.20, linewidth=0, zorder=1,
+            )
+    else:
+        ax0.plot(t, zeta_obs, color="black", lw=1.0, alpha=0.85, label="Observed")
+
     ax0.plot(t, sim_best, color="tab:blue", lw=1.6, alpha=0.95, label="Best variant")
     ax0.set_ylabel(r"$\zeta$ (m)", fontweight="bold")
     ax0.set_title(f"{sub_id} — best fit overview", fontweight="bold", pad=6)
@@ -407,6 +445,9 @@ def plot_full_subplots(
         ax.text(-0.07, 1.02, f"({lbl})", transform=ax.transAxes,
                 fontsize=10, fontweight="bold", va="bottom", ha="left")
 
+    axes[-1].set_xlim(t[0], t[-1])
+    for ax in axes:
+        ax.margins(x=0)
     fig.tight_layout()
     _save(fig, out_path)
 
