@@ -9,8 +9,32 @@ amplitude.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import (
+    RBF, ExpSineSquared, WhiteKernel, ConstantKernel,
+)
 
 MIN_OBS_FOR_GPR = 30
+SIGMA_FLOOR_M = 1e-4
+RANDOM_STATE = 42
+N_RESTARTS = 8
+
+
+def _build_kernel():
+    """Composite kernel: trend × (RBF + annual periodic) + white noise."""
+    return (
+        ConstantKernel(1.0, constant_value_bounds=(1e-3, 1e3))
+        * (
+            RBF(length_scale=180.0, length_scale_bounds=(30.0, 720.0))
+            + ExpSineSquared(
+                length_scale=1.0,
+                periodicity=365.25,
+                length_scale_bounds=(0.5, 5.0),
+                periodicity_bounds="fixed",
+            )
+        )
+        + WhiteKernel(noise_level=1e-4, noise_level_bounds=(1e-6, 1e-1))
+    )
 
 
 def gpr_fill(
@@ -31,7 +55,8 @@ def gpr_fill(
     y_filled : ndarray, shape (N,)
         y with NaN cells replaced by GP posterior mean. Real
         observations are returned bit-identically — only NaN cells
-        are altered.
+        are altered. If the fit is skipped (n_finite < MIN_OBS_FOR_GPR),
+        y_filled is a copy of y with its NaN cells unchanged.
     sigma : ndarray, shape (N,)
         Posterior standard deviation at every t. NaN if fit was
         skipped (too few observations).
@@ -42,7 +67,40 @@ def gpr_fill(
     imputed_mask = np.isnan(y)
     n_finite = int((~imputed_mask).sum())
     if n_finite < MIN_OBS_FOR_GPR:
-        sigma = np.full_like(y, np.nan)
-        return y.copy(), sigma, imputed_mask
+        return y.copy(), np.full_like(y, np.nan), imputed_mask
 
-    raise NotImplementedError("GPR fit not yet implemented")  # filled in Task 2
+    # Days-since-first as the GP's x-axis (float, kernel-friendly units).
+    t_days = (t - t[0]).days.values.astype(float).reshape(-1, 1)
+    obs = ~imputed_mask
+    X_obs = t_days[obs]
+    y_obs = y[obs]
+
+    # Detrend before fitting: cumulative ζ is non-stationary; GPR with RBF
+    # works best on stationary residuals. Subtract the OLS line on observed
+    # points and re-add it after prediction.
+    slope, intercept = np.polyfit(X_obs.ravel(), y_obs, 1)
+    trend_obs = slope * X_obs.ravel() + intercept
+    y_obs_detr = y_obs - trend_obs
+
+    gpr = GaussianProcessRegressor(
+        kernel=_build_kernel(),
+        n_restarts_optimizer=N_RESTARTS,
+        random_state=RANDOM_STATE,
+        normalize_y=False,
+        alpha=0.0,  # WhiteKernel handles noise explicitly
+    )
+    gpr.fit(X_obs, y_obs_detr)
+
+    mean_detr, sigma = gpr.predict(t_days, return_std=True)
+    trend_full = slope * t_days.ravel() + intercept
+    mean = mean_detr + trend_full
+
+    # Apply sigma floor so fill_between bands stay visible.
+    sigma_floor = max(SIGMA_FLOOR_M, 0.01 * float(np.nanstd(y_obs)))
+    sigma = np.maximum(sigma, sigma_floor)
+
+    # Preserve observed cells bit-identically; only fill NaN cells.
+    y_filled = y.copy()
+    y_filled[imputed_mask] = mean[imputed_mask]
+
+    return y_filled, sigma, imputed_mask

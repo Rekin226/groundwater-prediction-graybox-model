@@ -31,3 +31,39 @@ def test_gap_fill_handles_too_few_observations():
     np.testing.assert_array_equal(np.isnan(y_filled), np.isnan(y))
     assert np.all(np.isnan(sigma))
     np.testing.assert_array_equal(mask, np.isnan(y))
+
+
+def test_gap_fill_handles_no_gaps():
+    """Input with no NaN → imputed_mask all False, y_filled == y exactly."""
+    t = _make_t(120)
+    rng = np.random.default_rng(0)
+    y = np.cumsum(0.001 + rng.normal(0, 0.0005, 120))
+
+    y_filled, sigma, mask = gpr_fill(t, y)
+
+    assert mask.sum() == 0
+    np.testing.assert_array_equal(y_filled, y)
+    assert sigma.shape == (120,)
+    # sigma may be small but should be finite at observation points.
+    assert np.all(np.isfinite(sigma))
+
+
+def test_gap_fill_preserves_observed():
+    """Real observations are returned bit-identically; only NaN cells altered."""
+    t = _make_t(365)
+    rng = np.random.default_rng(1)
+    y_truth = np.cumsum(0.0008 + rng.normal(0, 0.0006, 365))
+    y = y_truth.copy()
+    # Knock out two windows
+    y[60:90]   = np.nan   # 30-day gap
+    y[200:240] = np.nan   # 40-day gap
+
+    y_filled, sigma, mask = gpr_fill(t, y)
+
+    # The observed cells are byte-identical
+    obs_idx = ~mask
+    np.testing.assert_array_equal(y_filled[obs_idx], y[obs_idx])
+    # The imputed cells are no longer NaN
+    assert np.all(np.isfinite(y_filled[mask]))
+    # Mask matches original NaN pattern
+    np.testing.assert_array_equal(mask, np.isnan(y))
