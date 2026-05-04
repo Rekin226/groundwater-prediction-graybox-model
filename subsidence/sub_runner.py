@@ -155,6 +155,11 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     if not cal_obs.empty:
         zeta = zeta - float(cal_obs.iloc[0])
 
+    # Compute GPR gap-fill ONCE per station for visualization. Does NOT enter
+    # the optimizer — sub_shell.fit_station(zeta_obs=zeta.values) below still
+    # receives the raw NaN-bearing array.
+    zeta_filled, zeta_sigma, imputed_mask = gpr_fill(idx, zeta.values)
+
     t_years = (idx - idx[0]).days.values / 365.25
     cal_mask = (idx >= CAL_START) & (idx <= CAL_END)
     val_mask = (idx >= VAL_START) & (idx <= VAL_END)
@@ -209,6 +214,9 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
                 metrics={k: f[k] for k in f
                          if k.startswith(("kge_", "rmse_", "r2_", "bias_"))},
                 out_path=fig_dir / v / f"sub_fit_{sub_id}.tiff",
+                zeta_filled=zeta_filled,
+                zeta_sigma=zeta_sigma,
+                imputed_mask=imputed_mask,
             )
 
         # Comparison overlay + metrics table
@@ -220,6 +228,9 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             cal_idx=cal_idx,
             val_idx=val_idx,
             out_path=fig_dir / "comparison" / f"sub_compare_{sub_id}.tiff",
+            zeta_filled=zeta_filled,
+            zeta_sigma=zeta_sigma,
+            imputed_mask=imputed_mask,
         )
 
         # Best-variant overview (ζ + h_driver + rainfall)
@@ -235,6 +246,11 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             if "driver_source" in h_df.columns else None,
             rainfall=None,  # rainfall integration deferred to Phase 9
             out_path=fig_dir / "full_subplots" / f"sub_fit_{sub_id}.tiff",
+            cal_idx=cal_idx,
+            val_idx=val_idx,
+            zeta_filled=zeta_filled,
+            zeta_sigma=zeta_sigma,
+            imputed_mask=imputed_mask,
         )
 
         # MLCW per-layer compaction profile (only for MLCW dataset)
