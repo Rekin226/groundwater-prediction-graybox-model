@@ -154,8 +154,9 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     # the optimizer can only absorb pathologically.  Subtracting the first
     # finite at-or-after CAL_START cancels that offset.
     cal_obs = zeta.loc[(zeta.index >= CAL_START) & (zeta.index <= CAL_END)].dropna()
-    if not cal_obs.empty:
-        zeta = zeta - float(cal_obs.iloc[0])
+    if cal_obs.empty:
+        return f"  {sub_id}: zero finite cal obs; skip"
+    zeta = zeta - float(cal_obs.iloc[0])
 
     # Compute GPR gap-fill ONCE per station for visualization. Does NOT enter
     # the optimizer — sub_shell.fit_station(zeta_obs=zeta.values) below still
@@ -170,6 +171,9 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     if cal_idx.size == 0 or val_idx.size == 0:
         return f"  {sub_id}: cal/val period has no data; skip"
     n_obs_cal = int((~np.isnan(zeta.values[cal_idx])).sum())
+    n_obs_val = int((~np.isnan(zeta.values[val_idx])).sum())
+    if n_obs_val == 0:
+        return f"  {sub_id}: zero finite val obs; skip"
     form3_ok = sub_dataset != "ls-wra-mlcw-obs" or n_obs_cal >= MIN_FORM3_OBS
 
     bounds = _per_station_bounds(h, sub_dataset)

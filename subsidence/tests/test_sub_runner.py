@@ -162,6 +162,78 @@ def test_csv_byte_identical_with_gpr_fill_noop(tmp_path, monkeypatch):
     )
 
 
+def test_zero_finite_cal_obs_skips_before_fit(tmp_path, monkeypatch):
+    """A station whose cal-window observations are entirely NaN must skip
+    BEFORE fit_station is called. Previously the empty-cal_obs branch only
+    disabled anchoring and silently fed all-NaN ζ to the optimizer.
+    """
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
+    sub_id, sub_dataset = "LYES", "ls-wra-gnss-obs"
+    run_id = "_zero_cal_obs_skip"
+    workspace = Path("workspace/results_sub") / run_id
+    if workspace.exists():
+        shutil.rmtree(workspace)
+
+    # Force every cal-window observation to NaN by patching _build_zeta to
+    # zero out the cal window of the real series.
+    real_build = sub_runner._build_zeta
+
+    def cal_window_to_nan(raw, ds, sid, rid):
+        s = real_build(raw, ds, sid, rid)
+        s = s.copy()
+        s.loc[(s.index >= sub_runner.CAL_START)
+              & (s.index <= sub_runner.CAL_END)] = np.nan
+        return s
+
+    monkeypatch.setattr(sub_runner, "_build_zeta", cal_window_to_nan)
+
+    fit_called = {"called": False}
+
+    def spy_fit(**kw):
+        fit_called["called"] = True
+        return {"best_variant": "M1", "all_variants": {}}
+
+    monkeypatch.setattr(sub_runner.sub_shell, "fit_station", spy_fit)
+
+    msg = sub_runner._process(sub_id, sub_dataset, run_id)
+    assert "zero finite cal obs" in msg, msg
+    assert not fit_called["called"], "fit_station ran on a zero-cal-obs station"
+
+
+def test_zero_finite_val_obs_skips_before_fit(tmp_path, monkeypatch):
+    """Same as above for the val window. fit_station must not be called on a
+    station with zero finite validation observations."""
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
+    sub_id, sub_dataset = "LYES", "ls-wra-gnss-obs"
+    run_id = "_zero_val_obs_skip"
+    workspace = Path("workspace/results_sub") / run_id
+    if workspace.exists():
+        shutil.rmtree(workspace)
+
+    real_build = sub_runner._build_zeta
+
+    def val_window_to_nan(raw, ds, sid, rid):
+        s = real_build(raw, ds, sid, rid)
+        s = s.copy()
+        s.loc[(s.index >= sub_runner.VAL_START)
+              & (s.index <= sub_runner.VAL_END)] = np.nan
+        return s
+
+    monkeypatch.setattr(sub_runner, "_build_zeta", val_window_to_nan)
+
+    fit_called = {"called": False}
+
+    def spy_fit(**kw):
+        fit_called["called"] = True
+        return {"best_variant": "M1", "all_variants": {}}
+
+    monkeypatch.setattr(sub_runner.sub_shell, "fit_station", spy_fit)
+
+    msg = sub_runner._process(sub_id, sub_dataset, run_id)
+    assert "zero finite val obs" in msg, msg
+    assert not fit_called["called"], "fit_station ran on a zero-val-obs station"
+
+
 def test_mlcw_no_viable_ring_leaves_no_layer_csv(tmp_path, monkeypatch):
     """When _build_zeta finds no MLCW ring with adequate cal+val coverage, no
     per-layer CSV must be written. Stale layer files for skipped stations
