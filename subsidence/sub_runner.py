@@ -158,11 +158,6 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
         return f"  {sub_id}: zero finite cal obs; skip"
     zeta = zeta - float(cal_obs.iloc[0])
 
-    # Compute GPR gap-fill ONCE per station for visualization. Does NOT enter
-    # the optimizer — sub_shell.fit_station(zeta_obs=zeta.values) below still
-    # receives the raw NaN-bearing array.
-    zeta_filled, zeta_sigma, imputed_mask = gpr_fill(idx, zeta.values)
-
     t_years = (idx - idx[0]).days.values / 365.25
     cal_mask = (idx >= CAL_START) & (idx <= CAL_END)
     val_mask = (idx >= VAL_START) & (idx <= VAL_END)
@@ -198,6 +193,10 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     # ------------------------------------------------------------------
     # Plots (rklib-style, TIFF 300 DPI)
     # ------------------------------------------------------------------
+    # gpr_fill runs INSIDE this block so a sklearn/kernel failure cannot
+    # nullify a successful fit. Plot-only is the operational boundary —
+    # sub_shell.fit_station above already received the raw NaN-bearing
+    # array, so the per-station CSV is already on disk by this point.
     try:
         from subsidence.sub_plotting import (
             plot_per_variant,
@@ -205,6 +204,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             plot_full_subplots,
             plot_mlcw_layer_profile,
         )
+        zeta_filled, zeta_sigma, imputed_mask = gpr_fill(idx, zeta.values)
         fig_dir = Path(f"workspace/results_sub/{run_id}/figures")
 
         # Per-variant figures

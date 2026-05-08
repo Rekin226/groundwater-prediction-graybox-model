@@ -234,6 +234,32 @@ def test_zero_finite_val_obs_skips_before_fit(tmp_path, monkeypatch):
     assert not fit_called["called"], "fit_station ran on a zero-val-obs station"
 
 
+def test_gpr_fill_exception_does_not_block_fit(tmp_path, monkeypatch):
+    """A gpr_fill failure must not prevent the per-station fit CSV from being
+    written. Plot-only is the operational boundary: optimizer success is
+    independent of imputation success.
+    """
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
+    sub_id, sub_dataset = "LYES", "ls-wra-gnss-obs"
+    run_id = "_gpr_fill_explodes"
+    workspace = Path("workspace/results_sub") / run_id
+    if workspace.exists():
+        shutil.rmtree(workspace)
+
+    def boom_gpr_fill(t, y):
+        raise RuntimeError("synthetic kernel optimization failure")
+
+    monkeypatch.setattr(sub_runner, "gpr_fill", boom_gpr_fill)
+
+    msg = sub_runner._process(sub_id, sub_dataset, run_id)
+    assert "fit failed" not in msg, msg
+    csv_path = workspace / "per_station" / f"{sub_id}.csv"
+    assert csv_path.exists(), (
+        "per-station fit CSV missing — a gpr_fill exception killed the fit "
+        "instead of being contained to the plot block."
+    )
+
+
 def test_mlcw_no_viable_ring_leaves_no_layer_csv(tmp_path, monkeypatch):
     """When _build_zeta finds no MLCW ring with adequate cal+val coverage, no
     per-layer CSV must be written. Stale layer files for skipped stations
