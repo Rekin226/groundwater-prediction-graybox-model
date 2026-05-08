@@ -160,3 +160,24 @@ def test_csv_byte_identical_with_gpr_fill_noop(tmp_path, monkeypatch):
         "per-station CSV differs between real-gpr_fill and noop-gpr_fill runs — "
         "gpr_fill output is leaking into the optimizer."
     )
+
+
+def test_mlcw_no_viable_ring_leaves_no_layer_csv(tmp_path, monkeypatch):
+    """When _build_zeta finds no MLCW ring with adequate cal+val coverage, no
+    per-layer CSV must be written. Stale layer files for skipped stations
+    pollute downstream artifact diffs."""
+    out_dir = tmp_path / "workspace/results_sub/_no_viable_ring/per_station"
+    monkeypatch.chdir(tmp_path)
+
+    # Synthetic MLCW frame: 3 rings, each with only 1 finite cal obs (below
+    # MLCW_MIN_CAL_OBS=12). No ring should be viable.
+    idx = pd.date_range("2020-01-01", "2025-03-31", freq="MS")
+    sparse = pd.DataFrame(index=idx, columns=["NO1", "NO2", "NO3"], dtype=float)
+    sparse.iloc[0] = 0.0  # one finite obs per ring at t_0 — far below MIN_CAL_OBS
+
+    sub_id = "_synthetic_mlcw"
+    result = sub_runner._build_zeta(sparse, "ls-wra-mlcw-obs", sub_id, "_no_viable_ring")
+    assert result.empty, "expected empty zeta when no ring is viable"
+    assert not (out_dir / f"{sub_id}_mlcw_layer.csv").exists(), (
+        "per-layer CSV was written for a station with no viable ring"
+    )

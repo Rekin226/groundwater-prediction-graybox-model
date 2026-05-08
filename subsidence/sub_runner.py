@@ -88,9 +88,6 @@ def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
             s = df[c].dropna()
             if not s.empty:
                 per_layer[c] = s.iloc[0] - df[c]
-        per_layer_path = Path(f"workspace/results_sub/{run_id}/per_station/{sub_id}_mlcw_layer.csv")
-        per_layer_path.parent.mkdir(parents=True, exist_ok=True)
-        per_layer.to_csv(per_layer_path)
         # Deepest-viable ring selection: walk shallow-ward from the bottom
         chosen_col = None
         for c in reversed(cols):
@@ -102,6 +99,11 @@ def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
                 break
         if chosen_col is None:
             return pd.Series(dtype=float)
+        # Write per-layer CSV only after a viable ring is confirmed; otherwise
+        # a skipped station leaves a stale layer file behind.
+        per_layer_path = Path(f"workspace/results_sub/{run_id}/per_station/{sub_id}_mlcw_layer.csv")
+        per_layer_path.parent.mkdir(parents=True, exist_ok=True)
+        per_layer.to_csv(per_layer_path)
         s = df[chosen_col].dropna()
         return s.iloc[0] - df[chosen_col]
     # GNSS / DBM single-value series
