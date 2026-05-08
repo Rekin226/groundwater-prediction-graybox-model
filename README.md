@@ -15,6 +15,13 @@ This repository contains a groundwater modeling pipeline that combines:
 
 The code is written in Python and is organized around standalone scripts under `srcs/`.
 
+## Research context
+
+This repository is related to published work on groundwater process analysis, reference-level estimation, and signal-processing-based hydrogeological interpretation. The methods and ideas implemented here are associated with the following references:
+
+1. Hsu, S.M., Ouédraogo, A.R. & Chen, YW. **A data-driven approach to establishing groundwater reference levels through hydrogeological process analysis in central Taiwan.** *Hydrogeology Journal* **34**, 103–124 (2026). DOI: https://doi.org/10.1007/s10040-025-02992-2
+2. Ouédraogo, A. R., Hsu, S. M., & Wang, Y. **Estimating the Average Magnitude of Pumping Surrounding Monitoring Wells Using Signal Processing.** *Journal of Hydrologic Engineering* **28**(4): 05023002 (2023). ASCE. DOI: https://doi.org/10.1061/JHYEFF.HEENG-5760
+
 ## Main workflow
 
 The project appears to support the following high-level workflow:
