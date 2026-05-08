@@ -1,40 +1,55 @@
 # Groundwater Prediction Gray-Box Model
 
-A Python-based gray-box modeling workflow for groundwater level prediction, station pairing, and coastal/inland classification in the Zhuoshui Alluvial Fan region.
+A Python-based gray-box modeling workflow for groundwater level prediction, station pairing, coastal/inland classification, and diagnostics in the Zhuoshui Alluvial Fan region of central Taiwan.
 
 ## Overview
 
-This repository contains a groundwater modeling pipeline that combines:
+This repository contains a research-oriented groundwater modeling pipeline that combines:
 
 - **Data preparation** for groundwater and rainfall stations
 - **Groundwater–upstream station pairing**
 - **Groundwater–rainfall pairing** using lagged correlation search
-- **Coastal vs inland station classification** using spatial proximity and frequency-domain tidal signatures
+- **Coastal vs. inland station classification** using spatial proximity and frequency-domain tidal signatures
 - **Gray-box model calibration** for each groundwater station
 - **Diagnostics and reporting** for low-performing fits
 
-The code is written in Python and is organized around standalone scripts under `srcs/`.
+The project is implemented in Python and organized around standalone scripts under `srcs/`.
+
+## What this repository does
+
+At a high level, the workflow:
+
+1. prepares groundwater and rainfall data,
+2. identifies likely upstream and rainfall drivers for each monitoring well,
+3. classifies wells as inland or coastal,
+4. builds a station-level modeling input table,
+5. calibrates gray-box models for selected stations, and
+6. exports fit summaries, comparisons, figures, and diagnostics.
+
+This repository is best viewed as a **research codebase** rather than a packaged software library.
 
 ## Research context
 
-This repository is related to published work on groundwater process analysis, reference-level estimation, and signal-processing-based hydrogeological interpretation. The methods and ideas implemented here are associated with the following references:
+This repository is related to published work on groundwater process analysis, reference-level estimation, and signal-processing-based hydrogeological interpretation.
+
+### Related publications
 
 1. Hsu, S.M., Ouédraogo, A.R. & Chen, YW. **A data-driven approach to establishing groundwater reference levels through hydrogeological process analysis in central Taiwan.** *Hydrogeology Journal* **34**, 103–124 (2026). DOI: https://doi.org/10.1007/s10040-025-02992-2
 2. Ouédraogo, A. R., Hsu, S. M., & Wang, Y. **Estimating the Average Magnitude of Pumping Surrounding Monitoring Wells Using Signal Processing.** *Journal of Hydrologic Engineering* **28**(4): 05023002 (2023). ASCE. DOI: https://doi.org/10.1061/JHYEFF.HEENG-5760
 
 ## Main workflow
 
-The project appears to support the following high-level workflow:
+The repository supports the following high-level workflow:
 
-1. Prepare and clean groundwater and rainfall metadata/time series
+1. Prepare and clean groundwater and rainfall metadata/time series.
 2. Pair each groundwater station with:
-   - an upstream groundwater station
-   - a rainfall station
-3. Classify stations into **inland** or **coastal** groups
-4. Build `data/gray_box_input.csv`
-5. Run the gray-box calibration driver for active stations
-6. Save figures and model-fit summaries to `workspace/`
-7. Run diagnostics on low-`R²` stations
+   - an upstream groundwater station,
+   - and a rainfall station.
+3. Classify stations into **inland** or **coastal** groups.
+4. Build `data/gray_box_input.csv`.
+5. Run gray-box calibration for active stations.
+6. Save figures and model-fit summaries to `workspace/`.
+7. Run diagnostics on stations with low `R²`.
 
 ## Repository structure
 
@@ -56,15 +71,31 @@ The project appears to support the following high-level workflow:
 └── workspace/             # Output plots, summaries, and diagnostics
 ```
 
-## Key scripts
+## Core scripts
+
+### `srcs/corr_up_rf.py`
+Builds the main station-level modeling input relationships.
+
+Main tasks:
+
+- filter groundwater stations inside the study boundary,
+- prepare groundwater metadata and time series,
+- load rainfall metadata and daily rainfall data,
+- identify upstream groundwater station links,
+- identify the best rainfall station by lagged correlation,
+- classify stations as coastal or inland,
+- generate `data/gray_box_input.csv`,
+- create maps and other visual outputs in `workspace/`.
 
 ### `srcs/gray_box_driver.py`
-Runs the project-level calibration workflow:
+Runs the batch calibration workflow.
 
-- loads `data/gray_box_input.csv`
-- filters rows where `active == 1`
-- groups stations by `group` (`inland` / `coastal`)
-- launches `gw_shell.py` in parallel for each station
+It:
+
+- loads `data/gray_box_input.csv`,
+- filters rows where `active == 1`,
+- groups stations by `group` (`inland` / `coastal`),
+- launches `gw_shell.py` in parallel for each selected station.
 
 This is the main batch runner for model fitting.
 
@@ -73,66 +104,52 @@ Per-station model fitting and result export.
 
 Responsibilities include:
 
-- loading groundwater and rainfall data
-- computing daily groundwater series
-- extracting tidal indicators (`amp`, `amt`) from hourly groundwater data using STFT
-- estimating rainfall and upstream lags
+- loading groundwater and rainfall data,
+- computing daily groundwater series,
+- extracting tidal indicators (`amp`, `amt`) from hourly groundwater data using STFT,
+- estimating rainfall and upstream lags,
 - fitting two model variants:
-  - `base`
-  - `filtered`
-- comparing model performance using RMSE and `R²`
+  - `base`,
+  - `filtered`,
+- comparing model performance using RMSE and `R²`,
 - exporting:
-  - plot images to `workspace/muli_model/`
-  - best-fit summaries to `workspace/gw_fit_results.csv`
-  - per-model comparisons to `workspace/gw_fit_model_compare.csv`
+  - plot images to `workspace/muli_model/`,
+  - best-fit summaries to `workspace/gw_fit_results.csv`,
+  - per-model comparisons to `workspace/gw_fit_model_compare.csv`.
 
 ### `srcs/gw_subroutine.py`
 Contains the gray-box groundwater model equations and wrappers used during calibration.
 
 Implemented models include:
 
-- inland model
-- coastal model
-- inland model with filtered upstream driver
-- coastal model with filtered upstream driver
-
-### `srcs/corr_up_rf.py`
-Builds the input relationships needed for gray-box modeling.
-
-Main tasks:
-
-- filter groundwater stations inside the study boundary
-- prepare groundwater metadata and time series
-- load rainfall metadata and daily rainfall data
-- identify upstream groundwater station links
-- identify best rainfall station by lagged correlation
-- classify stations as coastal/inland
-- generate `data/gray_box_input.csv`
-- create visual outputs in `workspace/`
+- inland model,
+- coastal model,
+- inland model with filtered upstream driver,
+- coastal model with filtered upstream driver.
 
 ### `srcs/classif_inld_coast.py`
 Standalone coastal/inland classification workflow based on:
 
-- distance to coastline
-- spectral evidence of the M2 tidal component
+- distance to coastline,
+- spectral evidence of the M2 tidal component.
 
 ### `srcs/input_prepar.py`
 Earlier-stage data preparation utility for:
 
-- groundwater metadata extraction from shapefiles
-- groundwater time series filtering
-- rainfall metadata preparation
-- writing intermediate CSV inputs
+- groundwater metadata extraction from shapefiles,
+- groundwater time series filtering,
+- rainfall metadata preparation,
+- writing intermediate CSV inputs.
 
 ### `srcs/diagnostics_report.py`
 Generates a diagnostics CSV for stations with low model performance.
 
 It checks for issues such as:
 
-- parameters near optimization bounds
-- tiny coefficients
-- weak rainfall/upstream/tidal contributions
-- suspicious lag values
+- parameters near optimization bounds,
+- tiny coefficients,
+- weak rainfall, upstream, or tidal contributions,
+- suspicious lag values.
 
 ### `srcs/diagnostics_pairing_search.py`
 Searches for improved rainfall/upstream pairings for stations with poor `R²` values by re-evaluating candidate combinations.
@@ -142,51 +159,51 @@ Simple helper script for filtering model-fit results below an `R²` threshold.
 
 ## Modeling concept
 
-This project uses a **gray-box** approach, meaning it blends:
+This project uses a **gray-box** approach, blending:
 
-- **physics-inspired process structure** (groundwater balance / response equations)
-- **data-driven parameter estimation** using nonlinear optimization
+- **physics-inspired process structure** (groundwater balance / response equations), and
+- **data-driven parameter estimation** using nonlinear optimization.
 
 The implemented models account for combinations of:
 
-- groundwater recession toward an equilibrium level
-- rainfall recharge effects
-- upstream groundwater influence
-- tidal amplitude forcing
-- for coastal sites:
-  - tidal modulation (`AMT`)
-  - sea-level interaction / submarine groundwater discharge term
+- groundwater recession toward an equilibrium level,
+- rainfall recharge effects,
+- upstream groundwater influence,
+- tidal amplitude forcing,
+- and, for coastal sites:
+  - tidal modulation (`AMT`),
+  - sea-level interaction / submarine groundwater discharge terms.
 
 Two model families are tested for each station:
 
 1. **Base model**
 2. **Filtered model** with a low-pass filtered upstream signal
 
-The best model is selected using fit error metrics.
+The best model is selected using fit error metrics such as RMSE and `R²`.
 
 ## Expected input data
 
-The repository itself currently does not include the actual modeling datasets, but the scripts expect files under `data/` such as:
+The repository currently does **not** include the full modeling datasets. The scripts expect files under `data/` such as:
 
 - `data/gray_box_input.csv`
 - `data/gw_data2.csv`
 - `data/rf_data.csv`
 - `data/gw_meta2.csv`
-- GIS/shapefile resources for:
-  - groundwater stations
-  - rainfall stations
-  - coastline / sea polygons
-  - Zhuoshui Alluvial Fan boundary
 
-Some scripts also reference intermediate or source files such as:
+Several scripts also reference GIS and intermediate files such as:
 
 - `data/input_gw_st.csv`
 - `data/input_rf_st.csv`
 - `data/gw_data.csv`
 - `data/rf_meta.csv`
 - `data/GIS/...`
+- shapefiles for:
+  - groundwater stations,
+  - rainfall stations,
+  - coastline / sea polygons,
+  - Zhuoshui Alluvial Fan boundary.
 
-Because the datasets are not committed, you will need to supply them locally before running the full workflow.
+Because these datasets are not committed, you must supply them locally before running the full workflow.
 
 ## Required columns
 
@@ -229,7 +246,7 @@ On Windows:
 
 ### 3. Install dependencies
 
-The repository does not currently include a `requirements.txt` or `pyproject.toml`, so dependencies must be installed manually.
+This repository does not currently include a `requirements.txt` or `pyproject.toml`, so dependencies must be installed manually.
 
 A likely starting set is:
 
@@ -237,13 +254,13 @@ A likely starting set is:
 pip install pandas numpy scipy scikit-learn matplotlib geopandas shapely pyproj pyshp tqdm numba
 ```
 
-Depending on your environment and GIS stack, you may also need system libraries required by GeoPandas/Fiona/GDAL.
+Depending on your environment, you may also need system libraries required by GeoPandas, Fiona, or GDAL.
 
-## Usage
+## Quick start
 
-### Generate gray-box input relationships
+A typical workflow from the repository root is:
 
-From the repository root:
+### Step 1: generate gray-box input relationships
 
 ```bash
 python srcs/corr_up_rf.py
@@ -251,13 +268,20 @@ python srcs/corr_up_rf.py
 
 This step is intended to generate:
 
-- groundwater metadata filtered to the study area
-- station pairings
-- coastal/inland classification
-- `data/gray_box_input.csv`
-- visualization outputs in `workspace/`
+- groundwater metadata filtered to the study area,
+- station pairings,
+- coastal/inland classification,
+- `data/gray_box_input.csv`,
+- visualization outputs in `workspace/`.
 
-### Run gray-box calibration for active stations
+### Step 2: activate selected stations
+
+Edit `data/gray_box_input.csv` and set:
+
+- `active = 1` for stations you want to calibrate,
+- `active = 0` for stations you want to skip.
+
+### Step 3: run gray-box calibration
 
 ```bash
 python srcs/gray_box_driver.py
@@ -265,12 +289,24 @@ python srcs/gray_box_driver.py
 
 This will:
 
-- read `data/gray_box_input.csv`
-- run active stations in parallel
-- call `srcs/gw_shell.py` for each station
-- write results and figures into `workspace/`
+- read `data/gray_box_input.csv`,
+- run active stations in parallel,
+- call `srcs/gw_shell.py` for each station,
+- write results and figures into `workspace/`.
 
-### Run a single-station fit manually
+### Step 4: inspect diagnostics
+
+```bash
+python srcs/diagnostics_report.py
+```
+
+Optional:
+
+```bash
+python srcs/diagnostics_pairing_search.py
+```
+
+## Run a single-station fit manually
 
 Example command pattern:
 
@@ -279,18 +315,6 @@ python srcs/gw_shell.py st_id=st1 gw_st=station_id gw_x=0 gw_y=0 ups_id=none rf_
 ```
 
 Arguments are passed in `key=value` format.
-
-### Generate diagnostics report
-
-```bash
-python srcs/diagnostics_report.py
-```
-
-### Search for better pairings on low-performing stations
-
-```bash
-python srcs/diagnostics_pairing_search.py
-```
 
 ## Outputs
 
@@ -306,24 +330,25 @@ Typical outputs written to `workspace/` include:
 - coastal station maps
 - upstream-link maps / animations
 
-## Notes and caveats
+## Limitations and caveats
 
 - This repository currently contains **code only**; core datasets are not included.
 - Some scripts use relative paths and assume execution from specific working directories.
 - GIS-dependent scripts require shapefiles and a working geospatial Python stack.
-- There is no packaged CLI or dependency lockfile yet.
-- File naming is partly legacy/in-progress, so some scripts may reflect evolving conventions.
+- There is no packaged CLI or pinned dependency file yet.
+- File naming and script organization reflect an active research workflow and may include legacy conventions.
 
-## Recommended next improvements
+## Suggested future improvements
 
-If you continue developing this repository, useful additions would be:
+Useful additions to this repository would include:
 
-- a `requirements.txt` or `environment.yml`
-- a sample dataset or synthetic example
-- a documented end-to-end pipeline example
-- clearer separation between raw data, processed data, and outputs
-- unit tests for model and preprocessing utilities
-- argument parsing for all scripts
+- a `requirements.txt` or `environment.yml`,
+- a small sample dataset or synthetic example,
+- a documented end-to-end reproducible example,
+- clearer separation between raw data, processed data, and outputs,
+- unit tests for core preprocessing and model functions,
+- consistent argument parsing for all scripts,
+- a dedicated `How to cite` section.
 
 ## License
 
