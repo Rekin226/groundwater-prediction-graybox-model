@@ -146,10 +146,10 @@ def plot_per_variant(
 
     # Cal / val / buffer shading
     if cal_idx.size:
-        ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0,
+        ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.10, zorder=0,
                    label="Cal (training)")
     if val_idx.size:
-        ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0,
+        ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.10, zorder=0,
                    label="Val (forecast)")
     if cal_idx.size and val_idx.size:
         buf_lo = t[int(cal_idx[-1])] + pd.Timedelta(days=1)
@@ -197,9 +197,10 @@ def plot_per_variant(
         ax.plot(t[val_idx], sim[val_idx], color=color, lw=1.8,
                 alpha=0.95, ls="--", label=f"{variant} – val")
 
-    # Split line
+    # Split lines (cal-end and val-start)
     if cal_idx.size and val_idx.size:
-        ax.axvline(t[val_idx[0]], color="black", ls="--", lw=1.2, alpha=0.8)
+        ax.axvline(t[int(cal_idx[-1])], color="black", ls="--", lw=1.2, alpha=0.8)
+        ax.axvline(t[int(val_idx[0])], color="black", ls="--", lw=1.2, alpha=0.8)
 
     # Metrics annotation
     kge_cal  = metrics.get("kge_cal",  float("nan"))
@@ -216,7 +217,7 @@ def plot_per_variant(
     ax.set_xlabel("Year", fontweight="bold")
     ax.set_ylabel(r"Cumulative $\zeta$ (m)", fontweight="bold")
     ax.set_title(f"{sub_id} — {variant}", fontweight="bold", pad=6)
-    ax.legend(loc="lower left", framealpha=0.85)
+    ax.legend(loc="best", framealpha=0.92, frameon=True, fontsize=8)
     ax.grid(True, lw=0.3, alpha=0.4)
     _fmt_xaxis(ax)
     ax.set_xlim(t[0], t[-1])
