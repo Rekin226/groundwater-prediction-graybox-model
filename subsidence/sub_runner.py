@@ -204,6 +204,12 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
         rows.append(row)
     pd.DataFrame(rows).to_csv(out_dir / f"{sub_id}.csv", index=False)
 
+    inactive_variants = [v for v, f in fit["all_variants"].items()
+                         if not f.get("rate_loss_active", True)]
+    if inactive_variants:
+        print(f"  [rate-loss inactive] {sub_id}: {','.join(inactive_variants)} "
+              "(cumulative-only fallback — sparse data)")
+
     # GPR time-series CSV (consumed by diag_gpr_pathology + diag_audit_classifiers).
     # Include sim_best so the audit classifier can compute kge_detrended without
     # re-simulating.

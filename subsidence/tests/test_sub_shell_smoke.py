@@ -89,3 +89,40 @@ def test_rate_loss_improves_tau_identifiability():
         f"rate-augmented loss did not improve τ identifiability: "
         f"err_cum={err_cum:.3f}, err_rate={err_rate:.3f}"
     )
+
+
+def test_rate_loss_active_flag_present_in_fit_result():
+    """fit_one_variant return dict includes rate_loss_active boolean."""
+    import numpy as np
+    from subsidence.sub_shell import fit_one_variant
+    n = 1500
+    rng = np.random.default_rng(0)
+    h = -10.0 + np.cumsum(rng.normal(0, 0.01, n))
+    t_years = np.arange(n) / 365.25
+    zeta = 0.001 * t_years + rng.normal(0, 1e-4, n)
+    cal_idx = np.arange(0, 1000)
+    val_idx = np.arange(1100, n)
+    bnds = {"Sk_e": (1e-6, 1e-3), "Sk_v": (1e-6, 1e-3),
+            "h_ref": (h.min(), h.max()), "v_tect": (-0.005, 0.005)}
+    out = fit_one_variant(h=h, zeta_obs=zeta, t_years=t_years, variant="M1",
+                          cal_idx=cal_idx, val_idx=val_idx, bounds=bnds)
+    assert "rate_loss_active" in out
+    assert out["rate_loss_active"] is True
+
+
+def test_rate_loss_inactive_on_extreme_sparse():
+    """If only a single finite-rate pair exists, rate_loss_active is False."""
+    import numpy as np
+    from subsidence.sub_shell import fit_one_variant
+    n = 1500
+    h = -10.0 + 0.01 * np.arange(n) / 100.0
+    t_years = np.arange(n) / 365.25
+    zeta = np.full(n, np.nan)
+    zeta[::400] = 0.001 * t_years[::400]
+    cal_idx = np.arange(0, 1000)
+    val_idx = np.arange(1100, n)
+    bnds = {"Sk_e": (1e-6, 1e-3), "Sk_v": (1e-6, 1e-3),
+            "h_ref": (h.min(), h.max()), "v_tect": (-0.005, 0.005)}
+    out = fit_one_variant(h=h, zeta_obs=zeta, t_years=t_years, variant="M1",
+                          cal_idx=cal_idx, val_idx=val_idx, bounds=bnds)
+    assert out["rate_loss_active"] is False

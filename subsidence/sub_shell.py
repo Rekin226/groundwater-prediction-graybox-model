@@ -97,6 +97,7 @@ def fit_one_variant(*, h, zeta_obs, t_years, variant: str,
         var_dz = 0.0
     w_cum = rate_weight / max(var_z, eps)
     w_rate = (1.0 - rate_weight) / max(var_dz, eps) if var_dz > eps else 0.0
+    rate_loss_active = w_rate > 0
 
     def _composite_loss(sim_cum: np.ndarray) -> float:
         sim_rate = np.diff(sim_cum)
@@ -151,7 +152,9 @@ def fit_one_variant(*, h, zeta_obs, t_years, variant: str,
     # kge_ill_conditioned = False (hardcoded): cumulative ζ has large mean for
     # subsidence-affected stations; the GW-pipeline ill-conditioned guard
     # (|mean|/std < 0.05) rarely triggers and the diagnostic value is low here.
-    out = {"variant": variant, "params": params_out, "kge_ill_conditioned": False}
+    out = {"variant": variant, "params": params_out,
+           "kge_ill_conditioned": False,
+           "rate_loss_active": bool(rate_loss_active)}
     for label, idx in [("cal", cal_idx), ("val", val_idx)]:
         kc = kge_components(zeta_obs[idx], sim_full[idx])
         out[f"kge_{label}"] = kc["kge"]
