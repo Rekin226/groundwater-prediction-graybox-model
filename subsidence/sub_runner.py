@@ -179,6 +179,20 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     except Exception as e:
         return f"  {sub_id}: fit failed — {str(e)[:120]}"
 
+    # Hoist gpr_fill BEFORE the CSV write so its outputs can be persisted
+    # alongside the variant CSV (Task 1.9).  gpr_fill is plot-only and must
+    # NEVER fail the fit pipeline — defensive fallback matches commit 6e62093.
+    try:
+        zeta_filled, zeta_sigma, imputed_mask, render_mask = gpr_fill(idx, zeta.values)
+    except Exception as _gpr_err:
+        # GPR is plot-only and must NEVER fail the fit pipeline.
+        # See test_pipeline_byte_identity.py — preserves commit 6e62093.
+        zeta_filled = zeta.values.copy()
+        zeta_sigma = np.full_like(zeta.values, np.nan)
+        imputed_mask = np.isnan(zeta.values)
+        render_mask = np.zeros_like(zeta.values, dtype=bool)
+        print(f"  [gpr warning] {sub_id}: {_gpr_err}")
+
     # Write per-station CSV
     rows = []
     for v, f in fit["all_variants"].items():
@@ -190,13 +204,27 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
         rows.append(row)
     pd.DataFrame(rows).to_csv(out_dir / f"{sub_id}.csv", index=False)
 
+    # GPR time-series CSV (consumed by diag_gpr_pathology + diag_audit_classifiers).
+    # Include sim_best so the audit classifier can compute kge_detrended without
+    # re-simulating.
+    sim_best = fit["all_variants"][fit["best_variant"]]["sim_full"]
+    gpr_df = pd.DataFrame({
+        "date": idx,
+        "zeta_obs": zeta.values,
+        "zeta_gpr_mean": zeta_filled,
+        "zeta_gpr_sigma": zeta_sigma,
+        "imputed_mask": imputed_mask,
+        "render_mask": render_mask,
+        "sim_best": sim_best,
+    })
+    gpr_df.to_csv(out_dir / f"{sub_id}_gpr.csv", index=False)
+
     # ------------------------------------------------------------------
     # Plots (rklib-style, TIFF 300 DPI)
     # ------------------------------------------------------------------
-    # gpr_fill runs INSIDE this block so a sklearn/kernel failure cannot
-    # nullify a successful fit. Plot-only is the operational boundary —
-    # sub_shell.fit_station above already received the raw NaN-bearing
-    # array, so the per-station CSV is already on disk by this point.
+    # zeta_filled / zeta_sigma / imputed_mask / render_mask come from the
+    # hoisted gpr_fill call above (Task 1.9).  They are already in scope;
+    # plot helpers consume them directly.
     try:
         from subsidence.sub_plotting import (
             plot_per_variant,
@@ -204,7 +232,6 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             plot_full_subplots,
             plot_mlcw_layer_profile,
         )
-        zeta_filled, zeta_sigma, imputed_mask, render_mask = gpr_fill(idx, zeta.values)
         fig_dir = Path(f"workspace/results_sub/{run_id}/figures")
 
         # Per-variant figures
@@ -242,8 +269,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
         )
 
         # Best-variant overview (ζ + h_driver + rainfall)
-        best = fit["best_variant"]
-        sim_best = fit["all_variants"][best]["sim_full"]
+        # sim_best already set above for the GPR CSV (Task 1.9).
         plot_full_subplots(
             sub_id=sub_id,
             t=idx,

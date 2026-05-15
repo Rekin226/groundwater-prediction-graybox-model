@@ -165,6 +165,17 @@ def test_csv_byte_identical_with_gpr_fill_noop(tmp_path, monkeypatch):
         "gpr_fill output is leaking into the optimizer."
     )
 
+    # Task 1.9: per-station GPR time-series CSV must be written alongside variant CSV
+    out_dir = Path(f"workspace/results_sub/{run_id_b}/per_station")
+    gpr_csv = out_dir / f"{sub_id}_gpr.csv"
+    assert gpr_csv.exists(), f"per_station/{sub_id}_gpr.csv was not written"
+    gpr_df = pd.read_csv(gpr_csv)
+    expected = {"date", "zeta_obs", "zeta_gpr_mean", "zeta_gpr_sigma",
+                "imputed_mask", "render_mask", "sim_best"}
+    assert expected.issubset(set(gpr_df.columns)), (
+        f"columns missing: {expected - set(gpr_df.columns)}"
+    )
+
 
 def test_zero_finite_cal_obs_skips_before_fit(tmp_path, monkeypatch):
     """A station whose cal-window observations are entirely NaN must skip
@@ -262,6 +273,15 @@ def test_gpr_fill_exception_does_not_block_fit(tmp_path, monkeypatch):
         "per-station fit CSV missing — a gpr_fill exception killed the fit "
         "instead of being contained to the plot block."
     )
+
+    # Task 1.9: even when gpr_fill raises, the _gpr.csv must still be written
+    # with the defensive fallback contents (NaN sigma, all-False render_mask).
+    out_dir = workspace / "per_station"
+    gpr_csv = out_dir / f"{sub_id}_gpr.csv"
+    assert gpr_csv.exists()
+    gpr_df = pd.read_csv(gpr_csv)
+    assert gpr_df["zeta_gpr_sigma"].isna().all(), "expected NaN sigma on GPR failure"
+    assert not gpr_df["render_mask"].any(), "expected render_mask all-False on GPR failure"
 
 
 def test_mlcw_no_viable_ring_leaves_no_layer_csv(tmp_path, monkeypatch):
