@@ -19,6 +19,43 @@ SIGMA_FLOOR_M = 1e-4
 RANDOM_STATE = 42
 N_RESTARTS = 8
 
+# ────────────────────────────────────────────────────────────────────────
+# Derive-don't-tune constants (see spec §1, Threshold derivations).
+# Adjust here; never inline these values at call sites.
+# ────────────────────────────────────────────────────────────────────────
+MAX_GAP_FRAC_OF_TRAIN = 0.25      # gap longer than 25% of training span → masked
+ALPHA_NOISE_MULT = 1.0            # Tikhonov α = (k · σ_obs_short)², k = 1 σ
+MAX_PLAUSIBLE_RATE_M_PER_YR = 0.10  # conservative Zhuoshui Fan compaction-rate cap
+SIGMA_RENDER_FLOOR_M = 0.005      # 5 mm absolute floor on sigma band
+SIGMA_RENDER_FLOOR_FRAC = 0.10    # OR 10% of per-station σ_obs — whichever larger
+RBF_LENGTH_SCALE_MAX_DAYS = 120.0   # sub-seasonal RBF; annual cycle in ExpSineSquared
+
+
+def _estimate_obs_noise(y: np.ndarray, window: int = 30) -> float:
+    """MAD-based short-window noise σ estimate, outlier-robust.
+
+    Computes per-window median absolute deviation on first differences,
+    then converts to σ via MAD × 1.4826.  Returns the network-pooled
+    median across windows.  Fallback to global std on too-few windows.
+    """
+    y = np.asarray(y, float)
+    finite = np.isfinite(y)
+    yf = y[finite]
+    if yf.size < 4:
+        return float("nan")
+    dy = np.diff(yf)  # first differences live on noise scale; trend cancels
+    if dy.size < window:
+        # Too short for windowed; use global MAD
+        mad = float(np.median(np.abs(dy - np.median(dy))))
+        return 1.4826 * mad / np.sqrt(2.0)
+    mads = []
+    for i in range(0, dy.size - window + 1, window):
+        seg = dy[i:i + window]
+        mads.append(float(np.median(np.abs(seg - np.median(seg)))))
+    mad = float(np.median(mads))
+    # Divide by sqrt(2) since dy = N(0, 2σ²) for white noise.
+    return 1.4826 * mad / np.sqrt(2.0)
+
 
 def _build_kernel():
     """Composite kernel: trend × (RBF + annual periodic) + white noise."""

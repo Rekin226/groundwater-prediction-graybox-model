@@ -96,3 +96,33 @@ def test_gap_fill_recovers_known_signal():
     assert n_outside <= 3, (
         f"{n_outside}/60 in-gap points outside ±2σ; max err = {err.max():.4e}"
     )
+
+
+def test_estimate_obs_noise_mad_based():
+    """MAD-based short-window σ — robust to outliers, matches σ on clean data."""
+    from subsidence.sub_gap_fill import _estimate_obs_noise
+    rng = np.random.default_rng(7)
+    n = 600
+    y_clean = np.cumsum(0.001 + rng.normal(0, 0.0008, n))
+
+    sigma_clean = _estimate_obs_noise(y_clean, window=30)
+    # MAD-derived σ should be within 50% of the true normal-noise σ (0.0008)
+    assert 0.0004 < sigma_clean < 0.0016, f"clean σ = {sigma_clean}"
+
+    # Inject an outlier — MAD must not blow up
+    y_outlier = y_clean.copy()
+    y_outlier[300] += 0.05  # huge outlier
+    sigma_outlier = _estimate_obs_noise(y_outlier, window=30)
+    assert abs(sigma_outlier - sigma_clean) / sigma_clean < 0.20, (
+        f"MAD shifted >20% by single outlier: clean={sigma_clean}, "
+        f"with outlier={sigma_outlier}"
+    )
+
+
+def test_module_constants_exposed():
+    """The five derive-don't-tune constants must live at module scope."""
+    import subsidence.sub_gap_fill as g
+    for name in ("MAX_GAP_FRAC_OF_TRAIN", "ALPHA_NOISE_MULT",
+                 "MAX_PLAUSIBLE_RATE_M_PER_YR",
+                 "SIGMA_RENDER_FLOOR_M", "SIGMA_RENDER_FLOOR_FRAC"):
+        assert hasattr(g, name), f"missing constant: {name}"
