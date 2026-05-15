@@ -277,6 +277,10 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
 
         # Best-variant overview (ζ + h_driver + rainfall)
         # sim_best already set above for the GPR CSV (Task 1.9).
+        _best_v = fit["best_variant"]
+        _best_f = fit["all_variants"][_best_v]
+        _best_metrics = {k: _best_f[k] for k in _best_f
+                         if k.startswith(("kge_", "rmse_", "r2_", "bias_"))}
         plot_full_subplots(
             sub_id=sub_id,
             t=idx,
@@ -293,6 +297,8 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             zeta_sigma=zeta_sigma,
             imputed_mask=imputed_mask,
             render_mask=render_mask,
+            metrics=_best_metrics,
+            best_variant=_best_v,
         )
 
         # MLCW per-layer compaction profile (only for MLCW dataset)

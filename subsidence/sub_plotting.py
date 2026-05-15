@@ -377,22 +377,34 @@ def plot_full_subplots(
     zeta_sigma: np.ndarray | None = None,
     imputed_mask: np.ndarray | None = None,
     render_mask: np.ndarray | None = None,
+    metrics: dict | None = None,
+    best_variant: str = "",
 ):
     """3-panel overview: ζ (best variant), h_driver shaded by source, rainfall (optional).
 
     Parameters
     ----------
-    driver_source : array-like of strings (same length as t) or None
+    driver_source : array-like of per-cell strings (same length as t) or None.
+        Expected values: "obs", "model_fill", "linear_interp", "taper".
+        Each cell is rendered as a background strip colored by source so a
+        reader can estimate the fraction of non-observed h(t) at a glance.
     rainfall : array-like or None — if None, the rainfall panel is omitted
     cal_idx, val_idx : optional index arrays for cal/val shading
     zeta_filled, zeta_sigma, imputed_mask : optional GPR-imputation arrays
+    metrics : dict with at least "kge_val" key; used to annotate panel (a)
+    best_variant : display name of the best-fit variant; shown in the legend
     """
     _setup()
     n_panels = 3 if rainfall is not None else 2
-    height_ratios = [2.5, 1, 1][:n_panels]
+    if n_panels == 2:
+        height_ratios = [3, 2]
+        figsize = (10, 6)
+    else:
+        height_ratios = [3, 2, 1]
+        figsize = (10, 8)
     fig, axes = plt.subplots(
         n_panels, 1,
-        figsize=(9, 2.2 * n_panels + 1),
+        figsize=figsize,
         sharex=True,
         gridspec_kw={"height_ratios": height_ratios, "hspace": 0.25},
     )
@@ -439,7 +451,16 @@ def plot_full_subplots(
     else:
         ax0.plot(t, zeta_obs, color="black", lw=1.0, alpha=0.85, label="Observed")
 
-    ax0.plot(t, sim_best, color="tab:blue", lw=1.6, alpha=0.95, label="Best variant")
+    _bv_label = f"{best_variant} (best)" if best_variant else "Best variant"
+    ax0.plot(t, sim_best, color="tab:blue", lw=1.6, alpha=0.95, label=_bv_label)
+
+    # D4 — KGE_val annotation
+    kge_val = metrics.get("kge_val", float("nan")) if metrics else float("nan")
+    if np.isfinite(kge_val):
+        ax0.text(0.02, 0.98, f"KGE_val = {kge_val:.2f}",
+                 transform=ax0.transAxes, va="top", ha="left",
+                 bbox=METRIC_BOX, fontsize=9)
+
     ax0.set_ylabel(r"$\zeta$ (m)", fontweight="bold")
     ax0.set_title(f"{sub_id} — best fit overview", fontweight="bold", pad=6)
     ax0.legend(fontsize=8, loc="upper right", framealpha=0.85)
@@ -447,24 +468,28 @@ def plot_full_subplots(
 
     # ---- Panel (b): h_driver, shaded by driver_source ----
     ax1 = axes[1]
-    ax1.plot(t, h_driver, color="tab:gray", lw=0.8, alpha=0.9)
+    ax1.plot(t, h_driver, color="tab:gray", lw=0.8, alpha=0.9, label="h(t)")
     if driver_source is not None:
         driver_source = np.asarray(driver_source)
         if len(driver_source) == len(t):
             h_min = float(np.nanmin(h_driver))
             h_max = float(np.nanmax(h_driver))
+            # Per-cell source coloring: each cell's fill_between strip is
+            # rendered as a wide background band (alpha=0.30, zorder=0) so a
+            # reader can estimate ~80% non-observed h(t) at a glance (§7 audit).
             _src_colors = [
-                ("model_fill",    "lightcoral"),
-                ("linear_interp", "khaki"),
-                ("taper",         "lightblue"),
+                ("model_fill",    "#e57373", "model fill"),
+                ("linear_interp", "#ffd54f", "linear interp"),
+                ("taper",         "#81d4fa", "taper"),
             ]
-            for src, col in _src_colors:
+            for src, col, display in _src_colors:
                 mask = (driver_source == src)
                 if mask.any():
                     ax1.fill_between(t, h_min, h_max, where=mask,
-                                     color=col, alpha=0.30, label=src, zorder=0)
+                                     color=col, alpha=0.30, label=display,
+                                     zorder=0)
     ax1.set_ylabel(r"$h$ driver (m)", fontweight="bold")
-    ax1.legend(fontsize=7, loc="upper right", framealpha=0.85)
+    ax1.legend(fontsize=7, loc="best", framealpha=0.85)
     ax1.grid(True, lw=0.3, alpha=0.4)
 
     # ---- Panel (c): rainfall ----
