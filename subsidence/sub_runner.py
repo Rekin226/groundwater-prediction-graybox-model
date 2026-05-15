@@ -199,6 +199,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
         row = {"sub_id": sub_id, "sub_dataset": sub_dataset, "variant": v,
                "is_best": v == fit["best_variant"],
                "tau_underidentified": (v.endswith("_tau") and not form3_ok),
+               "rate_loss_active": bool(f.get("rate_loss_active", True)),
                **f["params"],
                **{k: f[k] for k in f if k.startswith(("kge_", "rmse_", "r2_", "bias_"))}}
         rows.append(row)

@@ -47,6 +47,8 @@ def _merge(run_id: str):
     for f in sorted(base.glob("*.csv")):
         if f.stem.endswith("_mlcw_layer"):
             continue
+        if f.stem.endswith("_gpr"):
+            continue  # Time-series-keyed GPR CSV (different schema)
         rows.append(pd.read_csv(f))
     if not rows:
         return

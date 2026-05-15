@@ -123,10 +123,16 @@ def _main(argv=None):
                "kge_val": r.get("kge_val", float("nan")),
                "rate_loss_active": bool(r.get("rate_loss_active", False))}
 
-        # §7.1 fill fraction
+        # §7.1 fill fraction — h-driver files are parquet on disk; CSV
+        # fallback supports the unit test which uses a synthetic CSV.
+        h_parquet = args.h_driver_dir / f"{sub_id}.parquet"
         h_csv = args.h_driver_dir / f"{sub_id}.csv"
-        if h_csv.exists():
+        h_df = None
+        if h_parquet.exists():
+            h_df = pd.read_parquet(h_parquet)
+        elif h_csv.exists():
             h_df = pd.read_csv(h_csv)
+        if h_df is not None:
             ff = compute_fill_fraction(h_df)
             row["fill_fraction"] = ff
             row["fill_fraction_high"] = flag_high_fill_fraction(ff)
