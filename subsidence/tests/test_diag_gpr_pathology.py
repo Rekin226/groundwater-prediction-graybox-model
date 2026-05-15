@@ -138,3 +138,33 @@ def test_narrow_band_silent_when_sigma_reasonable():
     imputed_mask[100:300] = True
     flag, _ = mod.flag_narrow_band(obs, sigma, imputed_mask)
     assert flag is False
+
+
+def test_cli_end_to_end_on_tmpdir(tmp_path):
+    """Wire-up: given a minimal run-dir layout, the CLI writes report + summary."""
+    mod = _import_classifier()
+    per_station = tmp_path / "per_station"
+    per_station.mkdir()
+    n = 200
+    df = pd.DataFrame({
+        "date": pd.date_range("2020-01-01", periods=n),
+        "zeta_obs": np.cumsum(np.random.default_rng(0).normal(0, 0.001, n)),
+    })
+    df.loc[80:120, "zeta_obs"] = np.nan
+    df["zeta_gpr_mean"] = df["zeta_obs"].interpolate()
+    df["zeta_gpr_sigma"] = 0.002
+    df["imputed_mask"] = df["zeta_obs"].isna()
+    df["render_mask"] = True
+    df.to_csv(per_station / "TEST_gpr.csv", index=False)
+
+    mod._main(["--run-dir", str(tmp_path)])
+
+    report = tmp_path / "gpr_pathology_report.csv"
+    summary = tmp_path / "gpr_pathology_summary.txt"
+    assert report.exists(), "CSV report missing"
+    assert summary.exists(), "summary txt missing"
+    out = pd.read_csv(report)
+    assert set(["sub_id", "over_smoothing", "outlier_spike",
+                "extrapolation_drift", "render_dominance",
+                "narrow_band"]).issubset(out.columns)
+    assert out.shape[0] == 1
