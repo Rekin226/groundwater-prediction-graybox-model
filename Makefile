@@ -204,6 +204,7 @@ sub-help:
 	@echo "  sub-compare       Diagnostic report on weak stations (step 06)"
 	@echo "  sub-maps          Spatial maps (step 07)"
 	@echo "  sub-clean         Remove workspace/results_sub/<SUB_RUN_ID>"
+	@echo "  sub-gpr-pathology Compute GPR pathology flags for a run"
 	@echo ""
 	@echo "Required env vars (for sub-fetch and sub-driver): LS_USER, LS_PASS"
 
@@ -235,3 +236,6 @@ sub-maps:
 sub-clean:
 	rm -rf workspace/results_sub/$(SUB_RUN_ID)
 	@echo "Removed workspace/results_sub/$(SUB_RUN_ID)"
+
+sub-gpr-pathology:
+	$(PYTHON) subsidence/scripts/diag_gpr_pathology.py --run-dir workspace/results_sub/$(SUB_RUN_ID)
