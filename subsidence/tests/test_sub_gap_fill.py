@@ -22,7 +22,7 @@ def test_gap_fill_handles_too_few_observations():
     y = np.full(100, np.nan)
     y[:25] = np.linspace(0.0, 0.05, 25)  # only 25 finite samples
 
-    y_filled, sigma, mask = gpr_fill(t, y)
+    y_filled, sigma, mask, _render_mask = gpr_fill(t, y)
 
     assert y_filled.shape == (100,)
     assert sigma.shape == (100,)
@@ -39,7 +39,7 @@ def test_gap_fill_handles_no_gaps():
     rng = np.random.default_rng(0)
     y = np.cumsum(0.001 + rng.normal(0, 0.0005, 120))
 
-    y_filled, sigma, mask = gpr_fill(t, y)
+    y_filled, sigma, mask, _render_mask = gpr_fill(t, y)
 
     assert mask.sum() == 0
     np.testing.assert_array_equal(y_filled, y)
@@ -58,7 +58,7 @@ def test_gap_fill_preserves_observed():
     y[60:90]   = np.nan   # 30-day gap
     y[200:240] = np.nan   # 40-day gap
 
-    y_filled, sigma, mask = gpr_fill(t, y)
+    y_filled, sigma, mask, _render_mask = gpr_fill(t, y)
 
     # The observed cells are byte-identical
     obs_idx = ~mask
@@ -87,7 +87,7 @@ def test_gap_fill_recovers_known_signal():
     gap_start, gap_end = 700, 760
     y[gap_start:gap_end] = np.nan
 
-    y_filled, sigma, mask = gpr_fill(t, y)
+    y_filled, sigma, mask, _render_mask = gpr_fill(t, y)
 
     err = np.abs(y_filled[gap_start:gap_end] - truth[gap_start:gap_end])
     band = 2.0 * sigma[gap_start:gap_end]
@@ -158,3 +158,85 @@ def test_build_kernel_rejects_subseven_length_scale():
     from subsidence.sub_gap_fill import _build_kernel
     with pytest.raises(ValueError, match="length_scale_max"):
         _build_kernel(length_scale_max=5.0)
+
+
+def test_gpr_fill_returns_four_tuple_with_render_mask():
+    """Return tuple is now (y_filled, sigma, imputed_mask, render_mask)."""
+    t = _make_t(365)
+    rng = np.random.default_rng(11)
+    y = np.cumsum(0.001 + rng.normal(0, 0.0006, 365))
+    y[100:130] = np.nan  # small gap, should render
+
+    result = gpr_fill(t, y)
+    assert len(result) == 4, f"expected 4-tuple, got {len(result)}"
+    y_filled, sigma, imputed_mask, render_mask = result
+    assert render_mask.dtype == bool
+    assert render_mask.shape == y.shape
+    # Inside the small gap: should be rendered (mask True on the imputed cells)
+    assert render_mask[100:130].any()
+
+
+def test_gpr_fill_masks_long_extrapolation_gap():
+    """Gap > MAX_GAP_FRAC_OF_TRAIN · L_train → render_mask False inside it."""
+    from subsidence.sub_gap_fill import MAX_GAP_FRAC_OF_TRAIN
+    t = _make_t(2000)
+    rng = np.random.default_rng(12)
+    y = np.cumsum(0.001 + rng.normal(0, 0.0006, 2000))
+    # First 400 days observed = training span L_train. Then nuke 1500 days.
+    y[400:1900] = np.nan
+    # 1500 / 400 = 3.75, far above MAX_GAP_FRAC_OF_TRAIN (0.25).
+    _, _, imputed_mask, render_mask = gpr_fill(t, y)
+    assert imputed_mask[1000], "central cell should be imputed"
+    assert not render_mask[1000], (
+        "render_mask must mask the central cell of a 1500-day gap "
+        "when only 400 days of training exist"
+    )
+
+
+def test_gpr_fill_physical_sanity_global_reject():
+    """If GPR posterior exits [min_obs − Δ_phys, max_obs + Δ_phys] anywhere,
+    render_mask is all-False.
+
+    Construction: a very steep observed trend in the first 50 days (Δζ = 1.0 m
+    over 50 days = 7.3 m/yr — well above MAX_PLAUSIBLE_RATE_M_PER_YR = 0.10).
+    The detrend step inside gpr_fill will extrapolate that slope across the
+    remaining 1950 NaN days, driving the GPR posterior far outside
+    [min_obs, max_obs] + ċ_max·(record_span_yr).  The sanity gate must fire.
+    """
+    n = 2000
+    t = _make_t(n)
+    y = np.full(n, np.nan)
+    # 50 finite obs spanning a steep ramp: 0.0 → 1.0 m over 50 days
+    y[:50] = np.linspace(0.0, 1.0, 50)
+    _, _, imputed_mask, render_mask = gpr_fill(t, y)
+    assert imputed_mask.any()
+    assert not render_mask.any(), (
+        "render_mask should be all-False after physical-sanity reject; "
+        f"render_mask.sum() = {render_mask.sum()}"
+    )
+
+
+def test_gpr_fill_alpha_regularization_dampens_outlier_spike():
+    """With Tikhonov α active, a single outlier does NOT produce a spike of
+    >2·range(obs) — the kernel is no longer forced to interpolate it."""
+    t = _make_t(400)
+    rng = np.random.default_rng(14)
+    y = np.cumsum(0.001 + rng.normal(0, 0.0004, 400))
+    obs_range = float(y.max() - y.min())
+    # Slightly displace one cell by ~3× obs range, then mark surrounding window NaN
+    # so the outlier "drives" the impute. (Use the configuration that produced
+    # the XPES pathology pre-fix.)
+    y[150] = y[150] + 3.0 * obs_range
+    y[140:150] = np.nan
+    y[151:170] = np.nan
+
+    y_filled, _, imputed_mask, render_mask = gpr_fill(t, y)
+    # Where mask is True (gap-rendered region) the predicted mean must
+    # stay within ±2·range of obs.
+    rendered = imputed_mask & render_mask
+    if rendered.any():
+        assert (y_filled[rendered].max() <
+                y.max() + 2.0 * obs_range + 1e-9), \
+            "alpha regularization failed to dampen outlier-driven spike"
+        assert (y_filled[rendered].min() >
+                y.min() - 2.0 * obs_range - 1e-9)

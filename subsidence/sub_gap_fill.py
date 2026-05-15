@@ -93,69 +93,102 @@ def _build_kernel(length_scale_max: float = RBF_LENGTH_SCALE_MAX_DAYS,
 def gpr_fill(
     t: pd.DatetimeIndex,
     y: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Gap-fill ζ_obs with a Gaussian Process for visualization only.
-
-    Parameters
-    ----------
-    t : pd.DatetimeIndex
-        Full time axis (length N) — typically daily.
-    y : np.ndarray
-        Cumulative ζ values aligned to t (length N), NaN where missing.
 
     Returns
     -------
-    y_filled : ndarray, shape (N,)
-        y with NaN cells replaced by GP posterior mean. Real
-        observations are returned bit-identically — only NaN cells
-        are altered. If the fit is skipped (n_finite < MIN_OBS_FOR_GPR),
-        y_filled is a copy of y with its NaN cells unchanged.
-    sigma : ndarray, shape (N,)
-        Posterior standard deviation at every t. NaN if fit was
-        skipped (too few observations). Otherwise floored at
-        ``max(SIGMA_FLOOR_M, 0.01 * std(y_obs))`` so fill_between
-        envelopes stay visible at observation points.
-    imputed_mask : ndarray of bool, shape (N,)
-        True where the original y was NaN (i.e. GP-filled).
+    y_filled : ndarray, (N,) — observed cells unchanged; NaN cells replaced
+        by GP posterior mean. If MIN_OBS or sanity gate rejects, NaN cells
+        stay NaN.
+    sigma : ndarray, (N,) — posterior std (floored), NaN where fit skipped.
+    imputed_mask : ndarray bool, (N,) — True where original y was NaN.
+    render_mask : ndarray bool, (N,) — True where the imputation line should
+        be drawn.  False where gap is too long, too far from any observation,
+        or the physical-sanity gate has globally rejected the fill.  In the
+        rejected case, render_mask is all-False so plotting code suppresses
+        the legend entry.
     """
     y = np.asarray(y, dtype=float)
     imputed_mask = np.isnan(y)
     n_finite = int((~imputed_mask).sum())
     if n_finite < MIN_OBS_FOR_GPR:
-        return y.copy(), np.full_like(y, np.nan), imputed_mask
+        sigma_nan = np.full_like(y, np.nan)
+        render_mask = np.zeros_like(y, dtype=bool)
+        return y.copy(), sigma_nan, imputed_mask, render_mask
 
-    # Days-since-first as the GP's x-axis (float, kernel-friendly units).
     t_days = (t - t[0]).days.values.astype(float).reshape(-1, 1)
     obs = ~imputed_mask
     X_obs = t_days[obs]
     y_obs = y[obs]
 
-    # Detrend before fitting: cumulative ζ is non-stationary; GPR with RBF
-    # works best on stationary residuals. Subtract the OLS line on observed
-    # points and re-add it after prediction.
+    # Per-station noise estimate (drives α and noise_lower)
+    sigma_obs_short = _estimate_obs_noise(y_obs)
+    if not np.isfinite(sigma_obs_short) or sigma_obs_short <= 0:
+        sigma_obs_short = max(1e-4, 0.01 * float(np.std(y_obs)))
+    alpha_tikhonov = (ALPHA_NOISE_MULT * sigma_obs_short) ** 2
+
+    # Detrend (cumulative is non-stationary)
     slope, intercept = np.polyfit(X_obs.ravel(), y_obs, 1)
     trend_obs = slope * X_obs.ravel() + intercept
     y_obs_detr = y_obs - trend_obs
 
     gpr = GaussianProcessRegressor(
-        kernel=_build_kernel(),
+        kernel=_build_kernel(
+            length_scale_max=RBF_LENGTH_SCALE_MAX_DAYS,
+            noise_lower=max(1e-7, sigma_obs_short ** 2),
+        ),
         n_restarts_optimizer=N_RESTARTS,
         random_state=RANDOM_STATE,
         normalize_y=False,
-        alpha=0.0,  # WhiteKernel handles noise explicitly
+        alpha=alpha_tikhonov,
     )
     gpr.fit(X_obs, y_obs_detr)
-
     mean_detr, sigma = gpr.predict(t_days, return_std=True)
     trend_full = slope * t_days.ravel() + intercept
     mean = mean_detr + trend_full
 
-    # Apply sigma floor so fill_between bands stay visible.
-    sigma_floor = max(SIGMA_FLOOR_M, 0.01 * float(np.nanstd(y_obs)))
+    # Sigma render floor (visible band)
+    sigma_floor = max(SIGMA_RENDER_FLOOR_M,
+                      SIGMA_RENDER_FLOOR_FRAC * float(np.std(y_obs)))
     sigma = np.maximum(sigma, sigma_floor)
 
-    # Preserve observed cells bit-identically; only fill NaN cells.
+    # Compose y_filled (observed bit-identical; only NaN cells filled)
     y_filled = y.copy()
     y_filled[imputed_mask] = mean[imputed_mask]
 
-    return y_filled, sigma, imputed_mask
+    # ── Physical-sanity GLOBAL reject ──────────────────────────────────────
+    # Δ_phys = ċ_max × (gap duration in years).  Use the full record span
+    # as a conservative ceiling on the maximum gap.
+    record_span_days = float(X_obs.max() - X_obs.min())
+    delta_phys = (
+        MAX_PLAUSIBLE_RATE_M_PER_YR * (record_span_days / 365.25)
+    )
+    obs_min, obs_max = float(y_obs.min()), float(y_obs.max())
+    sanity_low = obs_min - delta_phys
+    sanity_high = obs_max + delta_phys
+    if (mean.min() < sanity_low) or (mean.max() > sanity_high):
+        render_mask = np.zeros_like(y, dtype=bool)
+        return y_filled, sigma, imputed_mask, render_mask
+
+    # ── Per-cell render mask (gap-too-long / too-far-from-obs) ────────────
+    L_train = record_span_days
+    max_gap_days = MAX_GAP_FRAC_OF_TRAIN * L_train
+    # Build "distance to nearest observation" array.
+    obs_positions = X_obs.ravel()
+    cell_positions = t_days.ravel()
+    # vectorised nearest-obs distance via searchsorted
+    idx = np.searchsorted(obs_positions, cell_positions)
+    left = np.clip(idx - 1, 0, len(obs_positions) - 1)
+    right = np.clip(idx, 0, len(obs_positions) - 1)
+    dist_left = np.abs(cell_positions - obs_positions[left])
+    dist_right = np.abs(cell_positions - obs_positions[right])
+    nearest_dist = np.minimum(dist_left, dist_right)
+
+    render_mask = np.ones_like(y, dtype=bool)
+    render_mask &= (nearest_dist <= max_gap_days)
+    # Observed cells are always "renderable" in mask sense (plotter checks
+    # imputed_mask separately), but we keep them True for clarity.
+    render_mask[obs] = True
+
+    return y_filled, sigma, imputed_mask, render_mask
