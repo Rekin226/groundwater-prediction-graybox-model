@@ -103,7 +103,97 @@ def _main(argv=None):
     p.add_argument("--run-dir", required=True, type=Path)
     p.add_argument("--h-driver-dir", required=True, type=Path)
     args = p.parse_args(argv)
-    print(f"diag_audit_classifiers placeholder — run-dir={args.run_dir}")
+
+    fit_csv = args.run_dir / "sub_fit_results.csv"
+    if not fit_csv.exists():
+        raise SystemExit(f"sub_fit_results.csv not found in {args.run_dir}")
+    fits = pd.read_csv(fit_csv)
+    best = fits[fits["is_best"] == True].copy()
+
+    per_station = args.run_dir / "per_station"
+    # Load CAL/VAL window definitions from sub_runner constants for
+    # persistence-KGE benchmarking (same windows as the audited run).
+    from subsidence.sub_runner import CAL_START, CAL_END, VAL_START, VAL_END
+
+    rows = []
+    for _, r in best.iterrows():
+        sub_id = r["sub_id"]
+        row = {"sub_id": sub_id,
+               "variant": r["variant"],
+               "kge_val": r.get("kge_val", float("nan")),
+               "rate_loss_active": bool(r.get("rate_loss_active", False))}
+
+        # §7.1 fill fraction
+        h_csv = args.h_driver_dir / f"{sub_id}.csv"
+        if h_csv.exists():
+            h_df = pd.read_csv(h_csv)
+            ff = compute_fill_fraction(h_df)
+            row["fill_fraction"] = ff
+            row["fill_fraction_high"] = flag_high_fill_fraction(ff)
+        else:
+            row["fill_fraction"] = float("nan")
+            row["fill_fraction_high"] = False
+
+        # Load per-station GPR time series for §8 classifiers
+        gpr_csv = per_station / f"{sub_id}_gpr.csv"
+        if gpr_csv.exists():
+            gp = pd.read_csv(gpr_csv, parse_dates=["date"])
+            obs = gp["zeta_obs"].to_numpy(dtype=float)
+            dates = gp["date"]
+
+            # §8.1 n_eff
+            row["n_eff"] = compute_n_eff(obs)
+
+            # §8.2 persistence-KGE benchmark on val window
+            cal_mask = (dates >= CAL_START) & (dates <= CAL_END)
+            val_mask = (dates >= VAL_START) & (dates <= VAL_END)
+            y_cal = obs[cal_mask.to_numpy()]
+            y_val = obs[val_mask.to_numpy()]
+            pers_kge = persistence_kge_benchmark(y_cal, y_val)
+            row["persistence_kge_val"] = pers_kge
+            kge_val = r.get("kge_val", float("nan"))
+            row["model_beats_persistence"] = (
+                bool(np.isfinite(kge_val) and np.isfinite(pers_kge) and
+                     kge_val > pers_kge)
+            )
+
+            # §8.10 KGE on detrended cumulative ζ
+            if "sim_best" in gp.columns:
+                sim = gp["sim_best"].to_numpy(dtype=float)
+                row["kge_detrended_val"] = kge_on_detrended(
+                    obs[val_mask.to_numpy()], sim[val_mask.to_numpy()]
+                )
+            else:
+                row["kge_detrended_val"] = float("nan")
+        else:
+            row["n_eff"] = float("nan")
+            row["persistence_kge_val"] = float("nan")
+            row["model_beats_persistence"] = False
+            row["kge_detrended_val"] = float("nan")
+
+        rows.append(row)
+
+    out_csv = args.run_dir / "audit_classifiers_report.csv"
+    out_txt = args.run_dir / "audit_classifiers_summary.txt"
+    pd.DataFrame(rows).to_csv(out_csv, index=False)
+    # Summary
+    n_total = len(rows)
+    high_fill = sum(1 for r in rows if r.get("fill_fraction_high"))
+    rate_active = sum(1 for r in rows if r.get("rate_loss_active"))
+    beats_pers = sum(1 for r in rows if r.get("model_beats_persistence"))
+    lines = [
+        f"Audit classifiers summary — {args.run_dir}",
+        f"n_stations = {n_total}",
+        f"  §7 high_fill_fraction (>50% non-obs):     {high_fill}/{n_total}",
+        f"  §8 rate_loss_active (chosen variant):      {rate_active}/{n_total}",
+        f"  §8 n_eff median (cumulative ζ):            "
+        f"{np.nanmedian([r['n_eff'] for r in rows]):.1f}",
+        f"  §8 model_beats_persistence (val window):   {beats_pers}/{n_total}",
+        f"  §8 persistence_kge_val median:             "
+        f"{np.nanmedian([r['persistence_kge_val'] for r in rows]):.3f}",
+    ]
+    out_txt.write_text("\n".join(lines) + "\n")
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":

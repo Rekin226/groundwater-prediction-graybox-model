@@ -60,3 +60,49 @@ def test_kge_detrended_strips_total_trend():
     y_sim = np.linspace(0, 0.10, n)
     kge_raw = m.kge_on_detrended(y_obs, y_sim)
     assert kge_raw < 0.9
+
+
+def test_audit_cli_end_to_end_on_tmpdir(tmp_path):
+    """Wire-up: minimal run-dir + h-driver-dir → CSV + summary written."""
+    m = _mod()
+    run_dir = tmp_path / "run"
+    h_dir = tmp_path / "h_drivers"
+    (run_dir / "per_station").mkdir(parents=True)
+    h_dir.mkdir()
+
+    # Minimal sub_fit_results.csv with one best-row
+    pd.DataFrame([{
+        "sub_id": "TEST", "sub_dataset": "ls-wra-gnss-obs", "variant": "M1",
+        "is_best": True, "kge_val": 0.3, "rate_loss_active": True,
+    }]).to_csv(run_dir / "sub_fit_results.csv", index=False)
+
+    # h-driver with mixed source labels
+    pd.DataFrame({
+        "driver_source": ["observed"] * 60 + ["model_fill"] * 40,
+    }).to_csv(h_dir / "TEST.csv", index=False)
+
+    # _gpr.csv (need to span the cal/val windows)
+    n = 1200
+    dates = pd.date_range("2019-12-01", periods=n, freq="D")
+    pd.DataFrame({
+        "date": dates,
+        "zeta_obs": np.cumsum(np.random.default_rng(0).normal(0, 0.0005, n)),
+        "zeta_gpr_mean": 0.0,
+        "zeta_gpr_sigma": 0.001,
+        "imputed_mask": False,
+        "render_mask": True,
+        "sim_best": np.cumsum(np.random.default_rng(1).normal(0, 0.0005, n)),
+    }).to_csv(run_dir / "per_station" / "TEST_gpr.csv", index=False)
+
+    m._main(["--run-dir", str(run_dir), "--h-driver-dir", str(h_dir)])
+
+    report = run_dir / "audit_classifiers_report.csv"
+    summary = run_dir / "audit_classifiers_summary.txt"
+    assert report.exists()
+    assert summary.exists()
+    out = pd.read_csv(report)
+    assert out.shape[0] == 1
+    expected_cols = {"sub_id", "fill_fraction", "fill_fraction_high",
+                     "n_eff", "persistence_kge_val", "model_beats_persistence",
+                     "kge_detrended_val", "rate_loss_active"}
+    assert expected_cols.issubset(set(out.columns))
