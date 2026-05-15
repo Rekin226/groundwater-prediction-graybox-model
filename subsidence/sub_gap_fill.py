@@ -38,6 +38,8 @@ def _estimate_obs_noise(y: np.ndarray, window: int = 30) -> float:
     then converts to σ via MAD × 1.4826.  Returns the network-pooled
     median across windows.  Fallback to global std on too-few windows.
     """
+    if window < 1:
+        raise ValueError(f"window must be ≥ 1, got {window}")
     y = np.asarray(y, float)
     finite = np.isfinite(y)
     yf = y[finite]

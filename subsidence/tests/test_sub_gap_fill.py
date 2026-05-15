@@ -120,9 +120,18 @@ def test_estimate_obs_noise_mad_based():
 
 
 def test_module_constants_exposed():
-    """The five derive-don't-tune constants must live at module scope."""
+    """The six derive-don't-tune constants must live at module scope."""
     import subsidence.sub_gap_fill as g
     for name in ("MAX_GAP_FRAC_OF_TRAIN", "ALPHA_NOISE_MULT",
                  "MAX_PLAUSIBLE_RATE_M_PER_YR",
-                 "SIGMA_RENDER_FLOOR_M", "SIGMA_RENDER_FLOOR_FRAC"):
+                 "SIGMA_RENDER_FLOOR_M", "SIGMA_RENDER_FLOOR_FRAC",
+                 "RBF_LENGTH_SCALE_MAX_DAYS"):
         assert hasattr(g, name), f"missing constant: {name}"
+
+
+def test_estimate_obs_noise_rejects_invalid_window():
+    """window < 1 raises ValueError (explicit contract, not silent failure)."""
+    from subsidence.sub_gap_fill import _estimate_obs_noise
+    import pytest
+    with pytest.raises(ValueError, match="window must be"):
+        _estimate_obs_noise(np.ones(100), window=0)
