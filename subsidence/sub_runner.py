@@ -204,7 +204,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             plot_full_subplots,
             plot_mlcw_layer_profile,
         )
-        zeta_filled, zeta_sigma, imputed_mask = gpr_fill(idx, zeta.values)
+        zeta_filled, zeta_sigma, imputed_mask, render_mask = gpr_fill(idx, zeta.values)
         fig_dir = Path(f"workspace/results_sub/{run_id}/figures")
 
         # Per-variant figures

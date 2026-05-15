@@ -144,8 +144,12 @@ def test_csv_byte_identical_with_gpr_fill_noop(tmp_path, monkeypatch):
     # fallback (raw y, NaN sigma, isnan mask). The optimizer sees identical
     # raw arrays in both runs → CSV must match byte-for-byte.
     def noop_gpr_fill(t, y):
+        """Returns the 4-tuple matching the new gpr_fill signature."""
         y = np.asarray(y, dtype=float)
-        return y.copy(), np.full_like(y, np.nan), np.isnan(y)
+        return (y.copy(),
+                np.full_like(y, np.nan),
+                np.isnan(y),
+                np.zeros_like(y, dtype=bool))  # render_mask all-False = "do not draw"
 
     run_id_b = "_byte_test_noop_gpr"
     if Path(f"workspace/results_sub/{run_id_b}").exists():
