@@ -59,12 +59,20 @@ def _estimate_obs_noise(y: np.ndarray, window: int = 30) -> float:
     return 1.4826 * mad / np.sqrt(2.0)
 
 
-def _build_kernel():
-    """Composite kernel: trend × (RBF + annual periodic) + white noise."""
+def _build_kernel(length_scale_max: float = RBF_LENGTH_SCALE_MAX_DAYS,
+                  noise_lower: float = 1e-5):
+    """Composite kernel: trend × (RBF + annual periodic) + white noise.
+
+    length_scale_max — upper bound on RBF correlation length in days.
+        Caller passes a population-derived value (default sub-seasonal).
+    noise_lower — lower bound on WhiteKernel noise_level; caller passes
+        the network-median MAD-derived noise floor.
+    """
     return (
         ConstantKernel(1.0, constant_value_bounds=(1e-3, 1e3))
         * (
-            RBF(length_scale=180.0, length_scale_bounds=(30.0, 720.0))
+            RBF(length_scale=min(60.0, length_scale_max / 2),
+                length_scale_bounds=(7.0, length_scale_max))
             + ExpSineSquared(
                 length_scale=1.0,
                 periodicity=365.25,
@@ -72,7 +80,8 @@ def _build_kernel():
                 periodicity_bounds="fixed",
             )
         )
-        + WhiteKernel(noise_level=1e-4, noise_level_bounds=(1e-6, 1e-1))
+        + WhiteKernel(noise_level=max(1e-4, noise_lower),
+                      noise_level_bounds=(noise_lower, 1e-1))
     )
 
 

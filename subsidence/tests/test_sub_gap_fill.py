@@ -135,3 +135,19 @@ def test_estimate_obs_noise_rejects_invalid_window():
     import pytest
     with pytest.raises(ValueError, match="window must be"):
         _estimate_obs_noise(np.ones(100), window=0)
+
+
+def test_build_kernel_accepts_derived_bounds():
+    from subsidence.sub_gap_fill import _build_kernel
+    k = _build_kernel(length_scale_max=120.0, noise_lower=1e-5)
+    params = k.get_params()
+    # RBF upper bound must equal length_scale_max=120
+    rbf_bounds = params["k1__k2__k1__length_scale_bounds"]
+    assert rbf_bounds[1] == 120.0, (
+        f"length-scale upper bound expected 120.0, got {rbf_bounds[1]}"
+    )
+    # WhiteKernel lower bound must equal noise_lower=1e-5
+    noise_bounds = params["k2__noise_level_bounds"]
+    assert noise_bounds[0] == pytest.approx(1e-5), (
+        f"noise_level lower bound expected 1e-5, got {noise_bounds[0]}"
+    )
