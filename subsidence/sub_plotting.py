@@ -133,6 +133,7 @@ def plot_per_variant(
     zeta_sigma: np.ndarray | None = None,
     imputed_mask: np.ndarray | None = None,
     render_mask: np.ndarray | None = None,
+    sub_dataset: str = "",
 ):
     """One plot per variant — observed black, cal+val sim in variant color.
 
@@ -222,6 +223,35 @@ def plot_per_variant(
     _fmt_xaxis(ax)
     ax.set_xlim(t[0], t[-1])
     ax.margins(x=0)
+
+    # E1 — MLCW y-axis: clip to observed range so GPR gap drift doesn't dominate
+    if sub_dataset == "ls-wra-mlcw-obs":
+        obs_finite = zeta_obs[np.isfinite(zeta_obs)]
+        if obs_finite.size > 0:
+            obs_min = float(obs_finite.min())
+            obs_max = float(obs_finite.max())
+            obs_range = obs_max - obs_min
+            if obs_range > 0:
+                pad = 0.10 * obs_range
+                ax.set_ylim(obs_min - pad, obs_max + pad)
+                # Check whether GPR or sim drifts outside the clipped range
+                beyond_below = 0.0
+                beyond_above = 0.0
+                if zeta_filled is not None:
+                    gpr_finite = zeta_filled[np.isfinite(zeta_filled)]
+                    if gpr_finite.size > 0:
+                        beyond_below = max(beyond_below, (obs_min - pad) - float(gpr_finite.min()))
+                        beyond_above = max(beyond_above, float(gpr_finite.max()) - (obs_max + pad))
+                if beyond_below > 0 or beyond_above > 0:
+                    msg = "GPR posterior extends beyond axis"
+                    if beyond_below > 0:
+                        msg += f" (down by {beyond_below:.2f} m)"
+                    if beyond_above > 0:
+                        msg += f" (up by {beyond_above:.2f} m)"
+                    ax.text(0.98, 0.02, msg, transform=ax.transAxes,
+                            va="bottom", ha="right", fontsize=8,
+                            style="italic", color="#666")
+
     fig.tight_layout()
     _save(fig, out_path)
 
@@ -239,6 +269,7 @@ def plot_comparison(
     zeta_sigma: np.ndarray | None = None,
     imputed_mask: np.ndarray | None = None,
     render_mask: np.ndarray | None = None,
+    sub_dataset: str = "",
 ):
     """All fitted variants overlaid; metrics table beneath; best variant asterisked.
 
@@ -357,6 +388,35 @@ def plot_comparison(
 
     ax.set_xlim(t[0], t[-1])
     ax.margins(x=0)
+
+    # E1 — MLCW y-axis: clip to observed range so GPR gap drift doesn't dominate
+    if sub_dataset == "ls-wra-mlcw-obs":
+        obs_finite = zeta_obs[np.isfinite(zeta_obs)]
+        if obs_finite.size > 0:
+            obs_min = float(obs_finite.min())
+            obs_max = float(obs_finite.max())
+            obs_range = obs_max - obs_min
+            if obs_range > 0:
+                pad = 0.10 * obs_range
+                ax.set_ylim(obs_min - pad, obs_max + pad)
+                # Check whether GPR or sim drifts outside the clipped range
+                beyond_below = 0.0
+                beyond_above = 0.0
+                if zeta_filled is not None:
+                    gpr_finite = zeta_filled[np.isfinite(zeta_filled)]
+                    if gpr_finite.size > 0:
+                        beyond_below = max(beyond_below, (obs_min - pad) - float(gpr_finite.min()))
+                        beyond_above = max(beyond_above, float(gpr_finite.max()) - (obs_max + pad))
+                if beyond_below > 0 or beyond_above > 0:
+                    msg = "GPR posterior extends beyond axis"
+                    if beyond_below > 0:
+                        msg += f" (down by {beyond_below:.2f} m)"
+                    if beyond_above > 0:
+                        msg += f" (up by {beyond_above:.2f} m)"
+                    ax.text(0.98, 0.02, msg, transform=ax.transAxes,
+                            va="bottom", ha="right", fontsize=8,
+                            style="italic", color="#666")
+
     fig.tight_layout()
     _save(fig, out_path)
 
@@ -379,6 +439,7 @@ def plot_full_subplots(
     render_mask: np.ndarray | None = None,
     metrics: dict | None = None,
     best_variant: str = "",
+    sub_dataset: str = "",
 ):
     """3-panel overview: ζ (best variant), h_driver shaded by source, rainfall (optional).
 
@@ -506,6 +567,34 @@ def plot_full_subplots(
     for ax, lbl in zip(axes, ["a", "b", "c"]):
         ax.text(-0.07, 1.02, f"({lbl})", transform=ax.transAxes,
                 fontsize=10, fontweight="bold", va="bottom", ha="left")
+
+    # E1 — MLCW y-axis: clip ax0 (ζ panel) to observed range; leave ax1 (h) untouched
+    if sub_dataset == "ls-wra-mlcw-obs":
+        obs_finite = zeta_obs[np.isfinite(zeta_obs)]
+        if obs_finite.size > 0:
+            obs_min = float(obs_finite.min())
+            obs_max = float(obs_finite.max())
+            obs_range = obs_max - obs_min
+            if obs_range > 0:
+                pad = 0.10 * obs_range
+                ax0.set_ylim(obs_min - pad, obs_max + pad)
+                # Check whether GPR or sim drifts outside the clipped range
+                beyond_below = 0.0
+                beyond_above = 0.0
+                if zeta_filled is not None:
+                    gpr_finite = zeta_filled[np.isfinite(zeta_filled)]
+                    if gpr_finite.size > 0:
+                        beyond_below = max(beyond_below, (obs_min - pad) - float(gpr_finite.min()))
+                        beyond_above = max(beyond_above, float(gpr_finite.max()) - (obs_max + pad))
+                if beyond_below > 0 or beyond_above > 0:
+                    msg = "GPR posterior extends beyond axis"
+                    if beyond_below > 0:
+                        msg += f" (down by {beyond_below:.2f} m)"
+                    if beyond_above > 0:
+                        msg += f" (up by {beyond_above:.2f} m)"
+                    ax0.text(0.98, 0.02, msg, transform=ax0.transAxes,
+                             va="bottom", ha="right", fontsize=8,
+                             style="italic", color="#666")
 
     axes[-1].set_xlim(t[0], t[-1])
     for ax in axes:
