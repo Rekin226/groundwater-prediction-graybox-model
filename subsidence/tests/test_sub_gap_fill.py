@@ -151,3 +151,10 @@ def test_build_kernel_accepts_derived_bounds():
     assert noise_bounds[0] == pytest.approx(1e-5), (
         f"noise_level lower bound expected 1e-5, got {noise_bounds[0]}"
     )
+
+
+def test_build_kernel_rejects_subseven_length_scale():
+    """length_scale_max below the RBF lower bound (7.0) must raise."""
+    from subsidence.sub_gap_fill import _build_kernel
+    with pytest.raises(ValueError, match="length_scale_max"):
+        _build_kernel(length_scale_max=5.0)

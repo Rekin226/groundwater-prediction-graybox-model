@@ -65,13 +65,18 @@ def _build_kernel(length_scale_max: float = RBF_LENGTH_SCALE_MAX_DAYS,
 
     length_scale_max — upper bound on RBF correlation length in days.
         Caller passes a population-derived value (default sub-seasonal).
+        Must be ≥ 7.0 (RBF lower bound).
     noise_lower — lower bound on WhiteKernel noise_level; caller passes
         the network-median MAD-derived noise floor.
     """
+    if length_scale_max < 7.0:
+        raise ValueError(
+            f"length_scale_max must be ≥ 7.0 (RBF lower bound), got {length_scale_max}"
+        )
     return (
         ConstantKernel(1.0, constant_value_bounds=(1e-3, 1e3))
         * (
-            RBF(length_scale=min(60.0, length_scale_max / 2),
+            RBF(length_scale=max(7.0, min(60.0, length_scale_max / 2)),
                 length_scale_bounds=(7.0, length_scale_max))
             + ExpSineSquared(
                 length_scale=1.0,
