@@ -108,3 +108,53 @@ def test_plot_full_subplots_with_cal_val_and_imputation(tmp_path: Path):
         imputed_mask=imputed_mask,
     )
     assert (tmp_path / "full.tiff").exists()
+
+
+def test_apply_render_mask_nans_out_cells_where_mask_false():
+    import numpy as np
+    from subsidence.sub_plotting import _apply_render_mask
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    mask = np.array([True, False, True, False, True])
+    out = _apply_render_mask(y, mask)
+    np.testing.assert_array_equal(np.isnan(out), [False, True, False, True, False])
+    np.testing.assert_array_equal(out[[0, 2, 4]], [1.0, 3.0, 5.0])
+
+
+def test_apply_render_mask_all_false_suppresses_entire_line():
+    import numpy as np
+    from subsidence.sub_plotting import _apply_render_mask
+    y = np.linspace(0, 1, 10)
+    mask = np.zeros(10, dtype=bool)
+    out = _apply_render_mask(y, mask)
+    assert np.all(np.isnan(out))
+
+
+def test_plot_per_variant_suppresses_gpr_legend_on_global_reject(tmp_path):
+    """When render_mask is all-False, the GPR-imputed line is not drawn."""
+    import numpy as np
+    import pandas as pd
+    from subsidence.sub_plotting import plot_per_variant
+
+    n = 300
+    t = pd.date_range("2020-01-01", periods=n, freq="D")
+    zeta_obs = np.cumsum(np.random.default_rng(0).normal(0, 1e-3, n))
+    sim = zeta_obs.copy()
+    cal_idx = np.arange(0, 200)
+    val_idx = np.arange(220, n)
+    zeta_filled = zeta_obs.copy()
+    zeta_sigma = np.full(n, 0.001)
+    imputed_mask = np.zeros(n, dtype=bool)
+    imputed_mask[100:150] = True
+    render_mask = np.zeros(n, dtype=bool)  # all-False ⇒ global reject
+
+    out = tmp_path / "test.tiff"
+    plot_per_variant(
+        sub_id="TEST", variant="M1", t=t, zeta_obs=zeta_obs, sim=sim,
+        cal_idx=cal_idx, val_idx=val_idx,
+        metrics={"kge_cal": 0.5, "kge_val": 0.3, "rmse_val": 0.01,
+                 "kge_rate_val": 0.0},
+        out_path=out,
+        zeta_filled=zeta_filled, zeta_sigma=zeta_sigma,
+        imputed_mask=imputed_mask, render_mask=render_mask,
+    )
+    assert out.exists()

@@ -223,6 +223,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
                 zeta_filled=zeta_filled,
                 zeta_sigma=zeta_sigma,
                 imputed_mask=imputed_mask,
+                render_mask=render_mask,
             )
 
         # Comparison overlay + metrics table
@@ -237,6 +238,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             zeta_filled=zeta_filled,
             zeta_sigma=zeta_sigma,
             imputed_mask=imputed_mask,
+            render_mask=render_mask,
         )
 
         # Best-variant overview (ζ + h_driver + rainfall)
@@ -257,6 +259,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
             zeta_filled=zeta_filled,
             zeta_sigma=zeta_sigma,
             imputed_mask=imputed_mask,
+            render_mask=render_mask,
         )
 
         # MLCW per-layer compaction profile (only for MLCW dataset)

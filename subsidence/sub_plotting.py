@@ -39,6 +39,17 @@ METRIC_BOX = dict(
 )
 
 
+def _apply_render_mask(y: "np.ndarray", mask: "np.ndarray") -> "np.ndarray":
+    """Return y with cells set to NaN where mask is False.
+
+    Matplotlib renders NaN as a line break, so this is the one-line
+    primitive for "don't draw here" used by all three plot helpers.
+    """
+    out = np.asarray(y, dtype=float).copy()
+    out[~np.asarray(mask, dtype=bool)] = np.nan
+    return out
+
+
 def _setup():
     """Apply publication font settings.
 
@@ -121,6 +132,7 @@ def plot_per_variant(
     zeta_filled: np.ndarray | None = None,
     zeta_sigma: np.ndarray | None = None,
     imputed_mask: np.ndarray | None = None,
+    render_mask: np.ndarray | None = None,
 ):
     """One plot per variant — observed black, cal+val sim in variant color.
 
@@ -149,14 +161,19 @@ def plot_per_variant(
         y_obs_only = np.where(imputed_mask, np.nan, zeta_filled)
         y_imp_only = np.where(imputed_mask, zeta_filled, np.nan)
         ax.plot(t, y_obs_only, color="black", lw=1.0, alpha=0.85, label="Observed")
-        ax.plot(t, y_imp_only, color="#7e57c2", lw=1.0, alpha=0.95,
-                label="GPR-imputed ±1σ")
+        if render_mask is None:
+            render_mask = np.ones_like(y_imp_only, dtype=bool)
+        y_imp_only = _apply_render_mask(y_imp_only, render_mask)
+        if np.any(render_mask & imputed_mask):
+            ax.plot(t, y_imp_only, color="#7e57c2", lw=1.0, alpha=0.95,
+                    label="GPR-imputed ±1σ")
+        # else: globally rejected → no line OR legend entry
         if zeta_sigma is not None and np.any(np.isfinite(zeta_sigma)):
             ax.fill_between(
                 t,
                 zeta_filled - zeta_sigma,
                 zeta_filled + zeta_sigma,
-                where=imputed_mask,
+                where=imputed_mask & render_mask,
                 color="#7e57c2", alpha=0.20, linewidth=0, zorder=1,
             )
     else:
@@ -220,6 +237,7 @@ def plot_comparison(
     zeta_filled: np.ndarray | None = None,
     zeta_sigma: np.ndarray | None = None,
     imputed_mask: np.ndarray | None = None,
+    render_mask: np.ndarray | None = None,
 ):
     """All fitted variants overlaid; metrics table beneath; best variant asterisked.
 
@@ -250,14 +268,19 @@ def plot_comparison(
         y_obs_only = np.where(imputed_mask, np.nan, zeta_filled)
         y_imp_only = np.where(imputed_mask, zeta_filled, np.nan)
         ax.plot(t, y_obs_only, color="black", lw=1.2, alpha=0.9, label="Observed", zorder=3)
-        ax.plot(t, y_imp_only, color="#7e57c2", lw=1.2, alpha=0.95,
-                label="GPR-imputed ±1σ", zorder=3)
+        if render_mask is None:
+            render_mask = np.ones_like(y_imp_only, dtype=bool)
+        y_imp_only = _apply_render_mask(y_imp_only, render_mask)
+        if np.any(render_mask & imputed_mask):
+            ax.plot(t, y_imp_only, color="#7e57c2", lw=1.2, alpha=0.95,
+                    label="GPR-imputed ±1σ", zorder=3)
+        # else: globally rejected → no line OR legend entry
         if zeta_sigma is not None and np.any(np.isfinite(zeta_sigma)):
             ax.fill_between(
                 t,
                 zeta_filled - zeta_sigma,
                 zeta_filled + zeta_sigma,
-                where=imputed_mask,
+                where=imputed_mask & render_mask,
                 color="#7e57c2", alpha=0.20, linewidth=0, zorder=1,
             )
     else:
@@ -347,6 +370,7 @@ def plot_full_subplots(
     zeta_filled: np.ndarray | None = None,
     zeta_sigma: np.ndarray | None = None,
     imputed_mask: np.ndarray | None = None,
+    render_mask: np.ndarray | None = None,
 ):
     """3-panel overview: ζ (best variant), h_driver shaded by source, rainfall (optional).
 
@@ -389,14 +413,19 @@ def plot_full_subplots(
         y_obs_only = np.where(imputed_mask, np.nan, zeta_filled)
         y_imp_only = np.where(imputed_mask, zeta_filled, np.nan)
         ax0.plot(t, y_obs_only, color="black", lw=1.0, alpha=0.85, label="Observed")
-        ax0.plot(t, y_imp_only, color="#7e57c2", lw=1.0, alpha=0.95,
-                 label="GPR-imputed ±1σ")
+        if render_mask is None:
+            render_mask = np.ones_like(y_imp_only, dtype=bool)
+        y_imp_only = _apply_render_mask(y_imp_only, render_mask)
+        if np.any(render_mask & imputed_mask):
+            ax0.plot(t, y_imp_only, color="#7e57c2", lw=1.0, alpha=0.95,
+                     label="GPR-imputed ±1σ")
+        # else: globally rejected → no line OR legend entry
         if zeta_sigma is not None and np.any(np.isfinite(zeta_sigma)):
             ax0.fill_between(
                 t,
                 zeta_filled - zeta_sigma,
                 zeta_filled + zeta_sigma,
-                where=imputed_mask,
+                where=imputed_mask & render_mask,
                 color="#7e57c2", alpha=0.20, linewidth=0, zorder=1,
             )
     else:
