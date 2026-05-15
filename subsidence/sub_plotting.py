@@ -146,9 +146,11 @@ def plot_per_variant(
 
     # Cal / val / buffer shading
     if cal_idx.size:
-        ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0)
+        ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0,
+                   label="Cal (training)")
     if val_idx.size:
-        ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0)
+        ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0,
+                   label="Val (forecast)")
     if cal_idx.size and val_idx.size:
         buf_lo = t[int(cal_idx[-1])] + pd.Timedelta(days=1)
         buf_hi = t[int(val_idx[0])]  - pd.Timedelta(days=1)
@@ -200,15 +202,13 @@ def plot_per_variant(
         ax.axvline(t[val_idx[0]], color="black", ls="--", lw=1.2, alpha=0.8)
 
     # Metrics annotation
-    kge_cal  = metrics.get("kge_cal",      float("nan"))
-    kge_val  = metrics.get("kge_val",      float("nan"))
-    rmse_val = metrics.get("rmse_val",     float("nan"))
-    rate_val = metrics.get("kge_rate_val", float("nan"))
+    kge_cal  = metrics.get("kge_cal",  float("nan"))
+    kge_val  = metrics.get("kge_val",  float("nan"))
+    rmse_val = metrics.get("rmse_val", float("nan"))
     txt = (
         f"KGE_cal = {kge_cal:.3f}\n"
         f"KGE_val = {kge_val:.3f}\n"
-        f"RMSE_val = {rmse_val:.3f} m\n"
-        f"KGE_rate_val = {rate_val:.3f}"
+        f"RMSE_val = {rmse_val:.3f} m"
     )
     ax.text(0.02, 0.98, txt, transform=ax.transAxes, va="top", fontsize=8,
             bbox=METRIC_BOX)
@@ -253,9 +253,11 @@ def plot_comparison(
 
     # Shade cal/val
     if cal_idx.size:
-        ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0)
+        ax.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0,
+                   label="Cal (training)")
     if val_idx.size:
-        ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0)
+        ax.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0,
+                   label="Val (forecast)")
     if cal_idx.size and val_idx.size:
         buf_lo = t[int(cal_idx[-1])] + pd.Timedelta(days=1)
         buf_hi = t[int(val_idx[0])]  - pd.Timedelta(days=1)
@@ -299,6 +301,7 @@ def plot_comparison(
     buf_lo = int(cal_idx[-1]) + 1 if cal_idx.size else None
     buf_hi = int(val_idx[0]) if val_idx.size else None
     has_buffer = (buf_lo is not None and buf_hi is not None and buf_lo < buf_hi)
+    _buf_label_used = False
     for v, f in fits.items():
         sim = f["sim_full"]
         c = VARIANT_COLOR.get(v, "tab:gray")
@@ -306,14 +309,17 @@ def plot_comparison(
         lw = 2.0 if is_best else 1.2
         alpha = 1.0 if is_best else 0.75
         # Buffer-year segment (subdued dotted; plotted first so cal/val overlay)
+        # Only the first variant gets the legend entry; subsequent ones are suppressed.
         if has_buffer:
+            buf_label = "Buffer-year sim (excluded)" if not _buf_label_used else "_nolegend_"
             ax.plot(t[buf_lo:buf_hi], sim[buf_lo:buf_hi], color=c, lw=lw*0.7,
-                    alpha=alpha*0.5, ls=":")
+                    alpha=alpha*0.5, ls=":", label=buf_label)
+            _buf_label_used = True
         if cal_idx.size:
             ax.plot(t[cal_idx], sim[cal_idx], color=c, lw=lw, alpha=alpha, ls="-")
         if val_idx.size:
             ax.plot(t[val_idx], sim[val_idx], color=c, lw=lw, alpha=alpha, ls="--",
-                    label=f"{v}{'*' if is_best else ''}")
+                    label=f"{v} (best)" if is_best else v)
 
     # Split line
     if cal_idx.size and val_idx.size:
@@ -328,16 +334,15 @@ def plot_comparison(
 
     # Metrics table
     ax_t.axis("off")
-    columns = ["Variant", "KGE_cal", "KGE_val", "RMSE_val (m)", "KGE_rate_val"]
+    columns = ["Variant", "KGE_cal", "KGE_val", "RMSE_val (m)"]
     cell_text = []
     for v, f in fits.items():
-        marker = " *" if v == best_variant else ""
+        label = f"{v} (best)" if v == best_variant else v
         cell_text.append([
-            f"{v}{marker}",
-            f"{f.get('kge_cal',      float('nan')):.3f}",
-            f"{f.get('kge_val',      float('nan')):.3f}",
-            f"{f.get('rmse_val',     float('nan')):.3f}",
-            f"{f.get('kge_rate_val', float('nan')):.3f}",
+            label,
+            f"{f.get('kge_cal',  float('nan')):.3f}",
+            f"{f.get('kge_val',  float('nan')):.3f}",
+            f"{f.get('rmse_val', float('nan')):.3f}",
         ])
     tbl = ax_t.table(cellText=cell_text, colLabels=columns,
                      loc="center", cellLoc="center")
@@ -398,9 +403,11 @@ def plot_full_subplots(
 
     # Cal / val / buffer shading on top panel
     if cal_idx is not None and cal_idx.size:
-        ax0.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0)
+        ax0.axvspan(t[cal_idx[0]], t[cal_idx[-1]], color="#2166ac", alpha=0.06, zorder=0,
+                    label="Cal (training)")
     if val_idx is not None and val_idx.size:
-        ax0.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0)
+        ax0.axvspan(t[val_idx[0]], t[val_idx[-1]], color="#d6604d", alpha=0.06, zorder=0,
+                    label="Val (forecast)")
     if cal_idx is not None and cal_idx.size and val_idx is not None and val_idx.size:
         buf_lo = t[int(cal_idx[-1])] + pd.Timedelta(days=1)
         buf_hi = t[int(val_idx[0])]  - pd.Timedelta(days=1)
