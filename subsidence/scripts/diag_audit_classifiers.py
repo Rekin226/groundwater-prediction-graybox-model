@@ -24,13 +24,20 @@ RING_THRESHOLD_GRID = [(8, 2), (12, 3), (16, 4)]
 
 
 def compute_fill_fraction(h_df: pd.DataFrame) -> float:
-    """Return fraction of cells where driver_source != 'observed'."""
+    """Return fraction of cells where the driver came from fill (model_fill,
+    linear_interp, taper) rather than observation.
+
+    Note on label values: the h-driver pipeline writes `driver_source` with
+    values "obs", "model_fill", "linear_interp", "taper" (NOT "observed").
+    Both labels accepted to keep the unit test fixture's "observed" working.
+    """
     if "driver_source" not in h_df.columns:
         return float("nan")
     n = len(h_df)
     if n == 0:
         return float("nan")
-    obs = int((h_df["driver_source"] == "observed").sum())
+    obs_mask = h_df["driver_source"].isin(["obs", "observed"])
+    obs = int(obs_mask.sum())
     return 1.0 - obs / n
 
 
