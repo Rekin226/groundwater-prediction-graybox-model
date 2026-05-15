@@ -249,7 +249,7 @@ def plot_comparison(
     _setup()
     fig, (ax, ax_t) = plt.subplots(
         2, 1, figsize=(9, 7),
-        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.38},
+        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.20},
     )
 
     # Shade cal/val
@@ -341,8 +341,8 @@ def plot_comparison(
         label = f"{v} (best)" if v == best_variant else v
         cell_text.append([
             label,
-            f"{f.get('kge_cal',  float('nan')):.3f}",
-            f"{f.get('kge_val',  float('nan')):.3f}",
+            f"{f.get('kge_cal',  float('nan')):.2f}",
+            f"{f.get('kge_val',  float('nan')):.2f}",
             f"{f.get('rmse_val', float('nan')):.3f}",
         ])
     tbl = ax_t.table(cellText=cell_text, colLabels=columns,
