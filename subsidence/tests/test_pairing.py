@@ -34,3 +34,30 @@ def test_excludes_other_zone():
     out = pair_subsidence_to_gw(sub, gw)
     # nearest in zone 50 is st2 even though st1 is closer
     assert out.iloc[0]["gw_st"] == 9200222
+
+
+def test_tied_distances_resolved_deterministically_by_st_id():
+    """When two GW stations are equidistant, choose the smaller gw_st."""
+    gw = _gw([("st_B", 9200222, 100.0, 0.0, 50),
+              ("st_A", 9200211, -100.0, 0.0, 50)])
+    sub = _sub([("X", "ls-wra-gnss-obs", 0.0, 0.0, 50)])
+    out = pair_subsidence_to_gw(sub, gw)
+    assert out.iloc[0]["gw_st"] == 9200211
+
+
+def test_pairing_ambiguous_flag_fires_when_two_within_10pct():
+    """Two GW stations within 10% of min distance → pairing_ambiguous=True."""
+    gw = _gw([("st_A", 9200211, 100.0, 0.0, 50),
+              ("st_B", 9200222, 105.0, 0.0, 50)])
+    sub = _sub([("X", "ls-wra-gnss-obs", 0.0, 0.0, 50)])
+    out = pair_subsidence_to_gw(sub, gw)
+    assert "pairing_ambiguous" in out.columns
+    assert bool(out.iloc[0]["pairing_ambiguous"]) is True
+
+
+def test_pairing_ambiguous_silent_when_unique():
+    gw = _gw([("st_A", 9200211, 100.0, 0.0, 50),
+              ("st_B", 9200222, 1000.0, 0.0, 50)])
+    sub = _sub([("X", "ls-wra-gnss-obs", 0.0, 0.0, 50)])
+    out = pair_subsidence_to_gw(sub, gw)
+    assert bool(out.iloc[0]["pairing_ambiguous"]) is False
