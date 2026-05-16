@@ -364,3 +364,31 @@ def test_detect_boxcar_anomalies_ignores_real_step():
     z = pd.Series(np.cumsum(rng.normal(0, 0.001, 400)), index=idx)
     z.iloc[200:] += 0.50  # sustained, no return
     assert detect_boxcar_anomalies(z) == []
+
+
+def test_detect_boxcar_prefers_nearest_partner_over_distant():
+    """Lone jump near other unrelated jumps shouldn't pair across hundreds of days.
+
+    Scenario: a tight -7m/+7m pair on day 200/202 (obvious 2-day glitch),
+    plus a lone -0.5m on day 100 and a lone +0.5m on day 400. The lone
+    pair is 300 days apart with matching magnitude — old greedy first-match
+    would pair them and NaN a huge swath. Score-based pairing should NaN
+    the tight pair but leave the lone jumps alone (they're 300 days apart,
+    a much worse score than the perfect day-200/202 pair).
+    """
+    from subsidence.clean_ls import detect_boxcar_anomalies
+    rng = np.random.default_rng(0)
+    n = 500
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    z = pd.Series(np.cumsum(rng.normal(0, 0.001, n)), index=idx)
+    # Tight glitch (the real boxcar)
+    z.iloc[200:203] += 7.0
+    # Lone sustained steps far apart that shouldn't pair (no immediate revert)
+    z.iloc[100:200] -= 0.5
+    z.iloc[400:] += 0.5
+    pairs = detect_boxcar_anomalies(z)
+    # Should find exactly the tight pair (days 200-202)
+    assert len(pairs) == 1
+    start, end, _ = pairs[0]
+    assert start == idx[200]
+    assert end == idx[203]

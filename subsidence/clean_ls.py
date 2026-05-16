@@ -18,6 +18,8 @@ MAD_TO_SIGMA = 1.4826
 PHYS_PLAUSIBLE_INSTANTANEOUS_M = 0.30
 BOXCAR_MAX_GAP_DAYS = 400
 BOXCAR_MAG_RATIO_TOL = 0.5
+BOXCAR_LONG_GAP_MIN_MAG_M = 1.0
+BOXCAR_SHORT_GAP_DAYS = 30
 
 
 def compute_robust_sigma(z: pd.Series) -> float:
@@ -102,17 +104,16 @@ def detect_boxcar_anomalies(z: pd.Series, *,
     if len(jumps) < 2:
         return []
     rows = jumps.reset_index(drop=True)
-    pairs: List[Tuple[pd.Timestamp, pd.Timestamp, float]] = []
-    used: set[int] = set()
+    # Score-based pairing: enumerate all candidate pairs, score each by gap
+    # (smaller = better) and magnitude ratio (closer to 1 = better), then
+    # greedily accept best-scoring pairs. Prevents a lone jump from latching
+    # onto a distant, weakly-matched partner.
+    candidates: List[Tuple[float, int, int]] = []
     for i in range(len(rows) - 1):
-        if i in used:
-            continue
-        a = rows.iloc[i]
         for j in range(i + 1, len(rows)):
-            if j in used:
-                continue
-            b = rows.iloc[j]
-            if (b["date"] - a["date"]).days > max_gap_days:
+            a, b = rows.iloc[i], rows.iloc[j]
+            gap_days = (b["date"] - a["date"]).days
+            if gap_days > max_gap_days:
                 break
             if np.sign(a["magnitude_m"]) == np.sign(b["magnitude_m"]):
                 continue
@@ -120,10 +121,24 @@ def detect_boxcar_anomalies(z: pd.Series, *,
             ratio = min(mag_a, mag_b) / max(mag_a, mag_b)
             if ratio < (1.0 - mag_ratio_tol):
                 continue
-            pairs.append((a["date"], b["date"], (mag_a + mag_b) / 2.0))
-            used.add(i)
-            used.add(j)
-            break
+            # Magnitude-dependent gap: small (< BOXCAR_LONG_GAP_MIN_MAG_M)
+            # boxcars must be tight in time; larger magnitudes can span longer
+            # (e.g., a 6-month antenna swap leaves a >1 m offset).
+            if max(mag_a, mag_b) < BOXCAR_LONG_GAP_MIN_MAG_M and gap_days > BOXCAR_SHORT_GAP_DAYS:
+                continue
+            score = (1.0 - gap_days / max_gap_days) + ratio
+            candidates.append((score, i, j))
+    candidates.sort(reverse=True)
+    pairs: List[Tuple[pd.Timestamp, pd.Timestamp, float]] = []
+    used: set[int] = set()
+    for _, i, j in candidates:
+        if i in used or j in used:
+            continue
+        a, b = rows.iloc[i], rows.iloc[j]
+        mag = (abs(a["magnitude_m"]) + abs(b["magnitude_m"])) / 2.0
+        pairs.append((a["date"], b["date"], mag))
+        used.add(i); used.add(j)
+    pairs.sort(key=lambda t: t[0])
     return pairs
 
 
