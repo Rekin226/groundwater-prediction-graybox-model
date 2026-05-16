@@ -43,7 +43,7 @@ DEFAULT_BOUNDS = {
 # regularisation; the choice is empirical, not arbitrary.
 V_TECT_BOUNDS_BY_DATASET = {
     "ls-wra-gnss-obs": (-0.015, 0.015),
-    "ls-wra-mlcw-obs": (-0.005, 0.005),
+    "ls-wra-mlcw-obs": (-0.001, 0.001),
 }
 MIN_FORM3_OBS = 36
 # DBM (Deep Borehole Marker) measures bedrock motion, not aquifer compaction.
