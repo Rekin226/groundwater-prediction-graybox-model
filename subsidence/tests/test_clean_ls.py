@@ -318,3 +318,49 @@ def test_clean_station_iterates_multiple_jumps():
         neighbor_series=[],
     )
     assert len(qc) >= 2
+
+
+def test_detect_boxcar_anomalies_finds_antenna_swap():
+    """+1m / -1m pair ~6 months apart = hardware glitch, not real motion."""
+    from subsidence.clean_ls import detect_boxcar_anomalies
+    rng = np.random.default_rng(0)
+    idx = pd.date_range("2022-01-01", periods=800, freq="1D")
+    z = pd.Series(np.cumsum(rng.normal(0, 0.001, 800)), index=idx)
+    z.iloc[200:380] += 1.05   # 6-month elevated segment
+    pairs = detect_boxcar_anomalies(z)
+    assert len(pairs) == 1
+    start, end, mag = pairs[0]
+    assert start == idx[200]
+    assert end == idx[380]
+    assert 1.0 <= mag <= 1.10
+
+
+def test_clean_station_nans_boxcar_segment():
+    """clean_station should NaN the entire bogus segment, not just endpoints."""
+    from subsidence.clean_ls import clean_station
+    rng = np.random.default_rng(0)
+    idx = pd.date_range("2022-01-01", periods=800, freq="1D")
+    z = pd.Series(np.cumsum(rng.normal(0, 0.001, 800)), index=idx)
+    z.iloc[200:380] += 1.05
+    out_z, qc = clean_station(
+        z=z, station_lat_lon=(23.78, 120.39),
+        eq_catalog=pd.DataFrame(columns=["time","latitude","longitude","depth","mag","id"]),
+        neighbor_series=[],
+    )
+    # Entire bogus segment should be NaN
+    assert out_z.iloc[200:381].isna().all()
+    # Surrounding clean data should be preserved
+    assert out_z.iloc[:200].notna().all()
+    assert out_z.iloc[381:].notna().all()
+    # QC should record the boxcar
+    assert (qc["classification"] == "boxcar_anomaly").any()
+
+
+def test_detect_boxcar_anomalies_ignores_real_step():
+    """A single sustained step (datum reset) is NOT a boxcar — leave it alone."""
+    from subsidence.clean_ls import detect_boxcar_anomalies
+    rng = np.random.default_rng(0)
+    idx = pd.date_range("2022-01-01", periods=400, freq="1D")
+    z = pd.Series(np.cumsum(rng.normal(0, 0.001, 400)), index=idx)
+    z.iloc[200:] += 0.50  # sustained, no return
+    assert detect_boxcar_anomalies(z) == []

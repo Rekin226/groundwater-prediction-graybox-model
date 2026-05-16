@@ -15,6 +15,10 @@ import pandas as pd
 
 MAD_TO_SIGMA = 1.4826
 
+PHYS_PLAUSIBLE_INSTANTANEOUS_M = 0.30
+BOXCAR_MAX_GAP_DAYS = 400
+BOXCAR_MAG_RATIO_TOL = 0.5
+
 
 def compute_robust_sigma(z: pd.Series) -> float:
     """Median-absolute-deviation σ of z.diff(), robust to outliers in z.
@@ -73,6 +77,54 @@ def count_agreeing_neighbors(jump_date: pd.Timestamp,
         if (same_sign.abs() >= threshold).any():
             n_agree += 1
     return n_agree
+
+
+def detect_boxcar_anomalies(z: pd.Series, *,
+                             n_sigma: float = 6.0,
+                             sigma_floor_cm: float = 1.0,
+                             min_magnitude_m: float = PHYS_PLAUSIBLE_INSTANTANEOUS_M,
+                             max_gap_days: int = BOXCAR_MAX_GAP_DAYS,
+                             mag_ratio_tol: float = BOXCAR_MAG_RATIO_TOL,
+                             ) -> List[Tuple[pd.Timestamp, pd.Timestamp, float]]:
+    """Find opposite-sign jump pairs bracketing a hardware-glitch segment.
+
+    A boxcar anomaly is one jump up by ~X m and one jump down by ~X m within
+    max_gap_days. The interval between them is the bogus segment (antenna
+    swap, firmware reset). Magnitudes below min_magnitude_m are physically
+    plausible ground motion and excluded.
+
+    Returns list of (start_date, end_date, averaged_magnitude_m) tuples.
+    """
+    jumps = detect_jumps(z, n_sigma=n_sigma, sigma_floor_cm=sigma_floor_cm)
+    if jumps.empty:
+        return []
+    jumps = jumps[jumps["magnitude_m"].abs() >= min_magnitude_m].sort_values("date")
+    if len(jumps) < 2:
+        return []
+    rows = jumps.reset_index(drop=True)
+    pairs: List[Tuple[pd.Timestamp, pd.Timestamp, float]] = []
+    used: set[int] = set()
+    for i in range(len(rows) - 1):
+        if i in used:
+            continue
+        a = rows.iloc[i]
+        for j in range(i + 1, len(rows)):
+            if j in used:
+                continue
+            b = rows.iloc[j]
+            if (b["date"] - a["date"]).days > max_gap_days:
+                break
+            if np.sign(a["magnitude_m"]) == np.sign(b["magnitude_m"]):
+                continue
+            mag_a, mag_b = abs(a["magnitude_m"]), abs(b["magnitude_m"])
+            ratio = min(mag_a, mag_b) / max(mag_a, mag_b)
+            if ratio < (1.0 - mag_ratio_tol):
+                continue
+            pairs.append((a["date"], b["date"], (mag_a + mag_b) / 2.0))
+            used.add(i)
+            used.add(j)
+            break
+    return pairs
 
 
 from subsidence.eq_catalog import match_jump_to_event
@@ -215,6 +267,24 @@ def clean_station(*, z: pd.Series,
     """
     z_curr = z.copy()
     qc_rows: List[Dict[str, Any]] = []
+
+    # Boxcar pre-pass: NaN out hardware-glitch segments before the iterative
+    # jump-by-jump loop runs. The iterative path can't NaN spans, only single
+    # days — so a +1 m / −1 m pair months apart (antenna swap) would leave a
+    # bogus elevated segment in the middle.
+    for start_date, end_date, mag in detect_boxcar_anomalies(
+            z_curr, n_sigma=n_sigma, sigma_floor_cm=sigma_floor_cm):
+        seg_mask = (z_curr.index >= start_date) & (z_curr.index <= end_date)
+        qc_rows.append({
+            "jump_date": start_date, "magnitude_m": float(mag),
+            "sigma_m": float("nan"), "n_sigma": float("nan"),
+            "classification": "boxcar_anomaly", "action": "nan_segment",
+            "eq_id": None, "eq_distance_km": None, "eq_magnitude": None,
+            "eq_depth_km": None, "n_neighbors_agree": 0,
+            "slope_pre_cmyr": None, "slope_post_cmyr": None,
+        })
+        z_curr = z_curr.copy()
+        z_curr.loc[z_curr.index[seg_mask]] = np.nan
 
     for iteration in range(max_iterations):
         jumps = detect_jumps(z_curr, n_sigma=n_sigma, sigma_floor_cm=sigma_floor_cm)
