@@ -392,3 +392,26 @@ def test_detect_boxcar_prefers_nearest_partner_over_distant():
     start, end, _ = pairs[0]
     assert start == idx[200]
     assert end == idx[203]
+
+
+def test_detect_boxcar_consolidates_split_subjumps():
+    """3-day cluster like [-0.89, -1.70, +2.61] should pair as boxcar.
+
+    Without consolidation, the lone -0.89 vs +2.61 fails ratio test (0.34 < 0.5),
+    and the cluster's down side is split across 2 sub-jumps. The fix sums
+    consecutive same-sign jumps within 3 days into a single effective jump.
+    """
+    from subsidence.clean_ls import detect_boxcar_anomalies
+    rng = np.random.default_rng(0)
+    n = 500
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    z = pd.Series(np.cumsum(rng.normal(0, 0.001, n)), index=idx)
+    # Simulate split-subjump glitch: day 200 -0.89, day 201 -1.70, day 202 +2.61
+    z.iloc[200:] -= 0.89
+    z.iloc[201:] -= 1.70
+    z.iloc[202:] += 2.61
+    pairs = detect_boxcar_anomalies(z)
+    assert len(pairs) == 1
+    start, end, _ = pairs[0]
+    assert start == idx[200]
+    assert end == idx[202]

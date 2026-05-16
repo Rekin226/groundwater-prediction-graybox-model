@@ -20,6 +20,7 @@ BOXCAR_MAX_GAP_DAYS = 400
 BOXCAR_MAG_RATIO_TOL = 0.5
 BOXCAR_LONG_GAP_MIN_MAG_M = 1.0
 BOXCAR_SHORT_GAP_DAYS = 30
+BOXCAR_CLUSTER_MAX_GAP_DAYS = 3
 
 
 def compute_robust_sigma(z: pd.Series) -> float:
@@ -103,7 +104,27 @@ def detect_boxcar_anomalies(z: pd.Series, *,
     jumps = jumps[jumps["magnitude_m"].abs() >= min_magnitude_m].sort_values("date")
     if len(jumps) < 2:
         return []
-    rows = jumps.reset_index(drop=True)
+    # Consolidate consecutive same-sign jumps within BOXCAR_CLUSTER_MAX_GAP_DAYS
+    # so e.g. [-0.89, -1.70, +2.61] across 3 days becomes [-2.59, +2.61] (a
+    # well-matched pair). Without this, a multi-day glitch with split sub-jumps
+    # leaves the down side fragmented and unpairable.
+    consolidated: List[Dict[str, Any]] = []
+    cur_total = float(jumps.iloc[0]["magnitude_m"])
+    cur_start = jumps.iloc[0]["date"]
+    for k in range(1, len(jumps)):
+        nxt = jumps.iloc[k]
+        same_sign = np.sign(nxt["magnitude_m"]) == np.sign(cur_total)
+        within_cluster = (nxt["date"] - cur_start).days <= BOXCAR_CLUSTER_MAX_GAP_DAYS
+        if same_sign and within_cluster:
+            cur_total += float(nxt["magnitude_m"])
+        else:
+            consolidated.append({"date": cur_start, "magnitude_m": cur_total})
+            cur_total = float(nxt["magnitude_m"])
+            cur_start = nxt["date"]
+    consolidated.append({"date": cur_start, "magnitude_m": cur_total})
+    rows = pd.DataFrame(consolidated)
+    if len(rows) < 2:
+        return []
     # Score-based pairing: enumerate all candidate pairs, score each by gap
     # (smaller = better) and magnitude ratio (closer to 1 = better), then
     # greedily accept best-scoring pairs. Prevents a lone jump from latching
