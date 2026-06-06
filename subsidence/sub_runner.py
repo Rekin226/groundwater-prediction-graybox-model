@@ -66,52 +66,74 @@ MLCW_MIN_VAL_OBS = 3
 
 def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
     """Build the cumulative ζ observable from a raw observation series.
-    For MLCW also writes per-layer compaction CSV (spec §9 requirement).
 
-    MLCW deepest-ring selection: prefer the deepest ring that has adequate
-    cal+val coverage.  Some stations have one or two deepest rings retired
-    mid-record (e.g. 僑義國小: NO30/31 stop 2021-12 while NO1-29 continue
-    through 2025-03).  Falling through to the next-deepest viable ring
-    preserves a near-total-compaction signal at the cost of missing the
-    truly deepest interval — the alternative (deepest unconditionally) drops
-    the station entirely.
+    Returns a ``(zeta, mlcw_deep_retired)`` tuple.  ``mlcw_deep_retired`` is
+    True only for MLCW stations whose deepest cal-viable ring lacks adequate
+    validation coverage (deep extensometer retired before VAL_START); such
+    stations are fit cal-only and their val metrics are reported as N/A.  It
+    is always False for GNSS/DBM and for MLCW stations whose deepest ring
+    spans the val window.
+
+    For MLCW also writes per-layer compaction CSV (spec §9 requirement) and
+    selects the deepest ring with adequate calibration coverage — the
+    total-column compaction observable whose sign matches head-driven
+    Riley/IBS physics.  See the inline note for why val coverage is no longer
+    a selection gate.
     """
     if sub_dataset == "ls-wra-mlcw-obs":
         df = raw if isinstance(raw, pd.DataFrame) else raw.to_frame()
         cols = [c for c in df.columns if c.startswith("NO")]
         cols.sort(key=lambda c: int(c[2:]))
         if not cols:
-            return pd.Series(dtype=float)
+            return pd.Series(dtype=float), False
         # Per-layer cumulative compaction relative to t_0 (each ring's value at first valid date)
         per_layer = pd.DataFrame(index=df.index)
         for c in cols:
             s = df[c].dropna()
             if not s.empty:
                 per_layer[c] = s.iloc[0] - df[c]
-        # Deepest-viable ring selection: walk shallow-ward from the bottom
+        # Deepest-cal-viable ring selection: walk shallow-ward from the bottom
+        # and choose the deepest ring with adequate CALIBRATION coverage.  The
+        # deepest ring is the total-column compaction observable and is the only
+        # ring whose sign is consistent with head-driven Riley/IBS compaction.
+        #
+        # We deliberately do NOT gate on validation coverage here.  On four
+        # stations (僑義國小, 北辰國小, 宏崙國小, 拯民國小) the deepest extensometer
+        # section was retired at 2021-12 (before VAL_START).  A prior version
+        # fell through to a shallower viable ring to obtain val data, but that
+        # ring measures a different, opposite-signed interval (shallow elastic
+        # rebound) — producing a spurious β sign-flip (KGE_val as low as −1.46)
+        # while the model still tracks the deep-column shape (r 0.71–0.83).  We
+        # now keep the correctly-signed deepest ring and flag the station as
+        # mlcw_deep_retired so its (invalid) val window is reported as N/A
+        # rather than scored as a model failure.
         chosen_col = None
         for c in reversed(cols):
             s = df[c].dropna()
             n_cal = int(((s.index >= CAL_START) & (s.index <= CAL_END)).sum())
-            n_val = int(((s.index >= VAL_START) & (s.index <= VAL_END)).sum())
-            if n_cal >= MLCW_MIN_CAL_OBS and n_val >= MLCW_MIN_VAL_OBS:
+            if n_cal >= MLCW_MIN_CAL_OBS:
                 chosen_col = c
                 break
         if chosen_col is None:
-            return pd.Series(dtype=float)
+            return pd.Series(dtype=float), False
+        # Deep-retired = chosen (deepest cal-viable) ring lacks adequate val
+        # coverage.  Such stations are fit cal-only and excluded from val
+        # aggregates downstream.
+        s = df[chosen_col].dropna()
+        n_val = int(((s.index >= VAL_START) & (s.index <= VAL_END)).sum())
+        mlcw_deep_retired = n_val < MLCW_MIN_VAL_OBS
         # Write per-layer CSV only after a viable ring is confirmed; otherwise
         # a skipped station leaves a stale layer file behind.
         per_layer_path = Path(f"workspace/results_sub/{run_id}/per_station/{sub_id}_mlcw_layer.csv")
         per_layer_path.parent.mkdir(parents=True, exist_ok=True)
         per_layer.to_csv(per_layer_path)
-        s = df[chosen_col].dropna()
-        return s.iloc[0] - df[chosen_col]
+        return s.iloc[0] - df[chosen_col], mlcw_deep_retired
     # GNSS / DBM single-value series
     s = raw["value"] if (isinstance(raw, pd.DataFrame) and "value" in raw.columns) else raw
     s = s.dropna()
     if s.empty:
-        return pd.Series(dtype=float)
-    return s.iloc[0] - s
+        return pd.Series(dtype=float), False
+    return s.iloc[0] - s, False
 
 
 def _per_station_bounds(h: np.ndarray, sub_dataset: str = "") -> dict:
@@ -140,7 +162,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
     # Daily resample for DBM (hourly raw)
     if sub_dataset == "ls-wra-dbm-obs":
         raw = raw.resample("1D").mean()
-    zeta_full = _build_zeta(raw, sub_dataset, sub_id, run_id)
+    zeta_full, mlcw_deep_retired = _build_zeta(raw, sub_dataset, sub_id, run_id)
     if zeta_full.empty:
         return f"  {sub_id}: empty zeta; skip"
     idx = h_df.index
@@ -167,8 +189,11 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
         return f"  {sub_id}: cal/val period has no data; skip"
     n_obs_cal = int((~np.isnan(zeta.values[cal_idx])).sum())
     n_obs_val = int((~np.isnan(zeta.values[val_idx])).sum())
-    if n_obs_val == 0:
+    if n_obs_val == 0 and not mlcw_deep_retired:
         return f"  {sub_id}: zero finite val obs; skip"
+    # mlcw_deep_retired stations are intentionally fit cal-only: their deepest
+    # (correctly-signed, total-column) ring was retired before the val window,
+    # so val metrics will be NaN and are reported as N/A rather than scored.
     form3_ok = sub_dataset != "ls-wra-mlcw-obs" or n_obs_cal >= MIN_FORM3_OBS
 
     bounds = _per_station_bounds(h, sub_dataset)
@@ -199,6 +224,7 @@ def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
         row = {"sub_id": sub_id, "sub_dataset": sub_dataset, "variant": v,
                "is_best": v == fit["best_variant"],
                "tau_underidentified": (v.endswith("_tau") and not form3_ok),
+               "mlcw_deep_retired": bool(mlcw_deep_retired),
                "rate_loss_active": bool(f.get("rate_loss_active", True)),
                **f["params"],
                **{k: f[k] for k in f if k.startswith(("kge_", "rmse_", "r2_", "bias_"))}}

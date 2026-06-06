@@ -194,11 +194,11 @@ def test_zero_finite_cal_obs_skips_before_fit(tmp_path, monkeypatch):
     real_build = sub_runner._build_zeta
 
     def cal_window_to_nan(raw, ds, sid, rid):
-        s = real_build(raw, ds, sid, rid)
+        s, flag = real_build(raw, ds, sid, rid)
         s = s.copy()
         s.loc[(s.index >= sub_runner.CAL_START)
               & (s.index <= sub_runner.CAL_END)] = np.nan
-        return s
+        return s, flag
 
     monkeypatch.setattr(sub_runner, "_build_zeta", cal_window_to_nan)
 
@@ -228,11 +228,11 @@ def test_zero_finite_val_obs_skips_before_fit(tmp_path, monkeypatch):
     real_build = sub_runner._build_zeta
 
     def val_window_to_nan(raw, ds, sid, rid):
-        s = real_build(raw, ds, sid, rid)
+        s, flag = real_build(raw, ds, sid, rid)
         s = s.copy()
         s.loc[(s.index >= sub_runner.VAL_START)
               & (s.index <= sub_runner.VAL_END)] = np.nan
-        return s
+        return s, flag
 
     monkeypatch.setattr(sub_runner, "_build_zeta", val_window_to_nan)
 
@@ -285,8 +285,8 @@ def test_gpr_fill_exception_does_not_block_fit(tmp_path, monkeypatch):
 
 
 def test_mlcw_no_viable_ring_leaves_no_layer_csv(tmp_path, monkeypatch):
-    """When _build_zeta finds no MLCW ring with adequate cal+val coverage, no
-    per-layer CSV must be written. Stale layer files for skipped stations
+    """When _build_zeta finds no MLCW ring with adequate calibration coverage,
+    no per-layer CSV must be written. Stale layer files for skipped stations
     pollute downstream artifact diffs."""
     out_dir = tmp_path / "workspace/results_sub/_no_viable_ring/per_station"
     monkeypatch.chdir(tmp_path)
@@ -298,8 +298,64 @@ def test_mlcw_no_viable_ring_leaves_no_layer_csv(tmp_path, monkeypatch):
     sparse.iloc[0] = 0.0  # one finite obs per ring at t_0 — far below MIN_CAL_OBS
 
     sub_id = "_synthetic_mlcw"
-    result = sub_runner._build_zeta(sparse, "ls-wra-mlcw-obs", sub_id, "_no_viable_ring")
+    result, deep_retired = sub_runner._build_zeta(
+        sparse, "ls-wra-mlcw-obs", sub_id, "_no_viable_ring")
     assert result.empty, "expected empty zeta when no ring is viable"
+    assert deep_retired is False, "no viable ring must not flag deep_retired"
     assert not (out_dir / f"{sub_id}_mlcw_layer.csv").exists(), (
         "per-layer CSV was written for a station with no viable ring"
     )
+
+
+def _mlcw_frame(deep_retires_pre_val: bool) -> pd.DataFrame:
+    """Synthetic MLCW frame with three rings.
+
+    The deepest ring (NO3) carries a positive (compaction-signed) total-column
+    signal.  A shallower ring (NO2) carries an opposite-signed signal and
+    always spans the full record.  When ``deep_retires_pre_val`` is True the
+    deepest ring stops before VAL_START, reproducing the 僑義/北辰/宏崙/拯民
+    pattern where the only correctly-signed ring lacks validation coverage.
+    """
+    idx = pd.date_range("2020-01-01", "2025-03-31", freq="MS")
+    t = np.arange(len(idx), dtype=float)
+    df = pd.DataFrame(index=idx, dtype=float)
+    # NO3 deepest: value DECREASES over time (first - value > 0 => compaction)
+    df["NO3"] = 100.0 - 0.01 * t
+    # NO2 shallower: value INCREASES (first - value < 0 => apparent extension)
+    df["NO2"] = 50.0 + 0.01 * t
+    df["NO1"] = 10.0 - 0.001 * t
+    if deep_retires_pre_val:
+        # Retire NO3 at 2021-12 (before VAL_START 2024-01); NO2/NO1 continue.
+        df.loc[df.index > "2021-12-31", "NO3"] = np.nan
+    return df
+
+
+def test_mlcw_deep_retired_keeps_deepest_ring_and_flags(tmp_path, monkeypatch):
+    """When the deepest cal-viable ring is retired before the val window, it is
+    still selected (correctly-signed total column) and mlcw_deep_retired=True."""
+    monkeypatch.chdir(tmp_path)
+    df = _mlcw_frame(deep_retires_pre_val=True)
+    zeta, deep_retired = sub_runner._build_zeta(
+        df, "ls-wra-mlcw-obs", "_deep_retired", "_deep_retired_run")
+    assert deep_retired is True
+    # Chosen ring is the deepest (NO3): zeta = first - value, monotonically
+    # increasing (positive compaction), NOT the opposite-signed NO2.
+    zfin = zeta.dropna()
+    assert zfin.iloc[-1] > 0, "deepest-ring zeta must be compaction-signed (>0)"
+    # Val window is empty for the chosen ring.
+    val = zeta.loc[(zeta.index >= sub_runner.VAL_START)
+                   & (zeta.index <= sub_runner.VAL_END)].dropna()
+    assert val.empty, "deep-retired ring must have no finite val obs"
+
+
+def test_mlcw_healthy_deepest_not_flagged(tmp_path, monkeypatch):
+    """A station whose deepest ring spans the val window is selected and NOT
+    flagged deep_retired."""
+    monkeypatch.chdir(tmp_path)
+    df = _mlcw_frame(deep_retires_pre_val=False)
+    zeta, deep_retired = sub_runner._build_zeta(
+        df, "ls-wra-mlcw-obs", "_healthy", "_healthy_run")
+    assert deep_retired is False
+    val = zeta.loc[(zeta.index >= sub_runner.VAL_START)
+                   & (zeta.index <= sub_runner.VAL_END)].dropna()
+    assert not val.empty, "healthy deepest ring must retain val obs"

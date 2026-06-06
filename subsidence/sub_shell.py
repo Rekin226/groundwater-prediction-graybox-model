@@ -174,12 +174,21 @@ def fit_station(*, h, zeta_obs, t_years, cal_idx, val_idx,
                 form3_eligible: bool = False,
                 seed: int = 42,
                 rate_weight: float = 0.5) -> dict:
-    """Fit all (form3-eligible-aware) variants and select best by val KGE."""
+    """Fit all (form3-eligible-aware) variants and select the best.
+
+    Selection is normally by validation KGE.  When every variant has a NaN
+    val KGE — e.g. mlcw_deep_retired stations fit cal-only because their
+    deepest ring was retired before the val window — fall back to calibration
+    KGE so the chosen variant is principled rather than arbitrary.
+    """
     variants = list(VARIANTS) if form3_eligible else ["M1", "M2"]
     fits = {v: fit_one_variant(h=h, zeta_obs=zeta_obs, t_years=t_years,
                                variant=v, cal_idx=cal_idx, val_idx=val_idx,
                                bounds=bounds, seed=seed,
                                rate_weight=rate_weight) for v in variants}
-    best = max(fits, key=lambda v: fits[v]["kge_val"]
-               if not np.isnan(fits[v]["kge_val"]) else -np.inf)
+    selection_key = "kge_val"
+    if all(np.isnan(fits[v]["kge_val"]) for v in fits):
+        selection_key = "kge_cal"
+    best = max(fits, key=lambda v: fits[v][selection_key]
+               if not np.isnan(fits[v][selection_key]) else -np.inf)
     return {"best_variant": best, "all_variants": fits}

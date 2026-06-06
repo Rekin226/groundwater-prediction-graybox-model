@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from subsidence.sub_shell import fit_one_variant
+from subsidence.sub_shell import fit_one_variant, fit_station
 
 
 def _synthetic_h(n=1500, h0=10.0, drop=3.0):
@@ -126,3 +126,33 @@ def test_rate_loss_inactive_on_extreme_sparse():
     out = fit_one_variant(h=h, zeta_obs=zeta, t_years=t_years, variant="M1",
                           cal_idx=cal_idx, val_idx=val_idx, bounds=bnds)
     assert out["rate_loss_active"] is False
+
+
+def test_fit_station_cal_only_selects_by_cal_kge():
+    """When the val window is entirely NaN (mlcw_deep_retired), fit_station must
+    still return a finite best variant chosen by cal KGE rather than picking
+    arbitrarily off NaN val KGE."""
+    from subsidence.sub_subroutine import simulate_form2
+    n = 1095
+    h = _synthetic_h(n)
+    t = np.arange(n) / 365.25
+    zeta_true = simulate_form2(h, t_years=t, Sk_e=1e-3, Sk_v=5e-3,
+                               h_ref=9.0, v_tect=-0.01, smooth_max=False)
+    zeta_obs = zeta_true + 0.001 * np.random.default_rng(1).standard_normal(n)
+    # Val window present as indices but entirely NaN (deep ring retired).
+    zeta_obs[820:] = np.nan
+    fit = fit_station(
+        h=h, zeta_obs=zeta_obs, t_years=t,
+        cal_idx=np.arange(0, 730), val_idx=np.arange(820, n),
+        bounds=dict(Sk_e=(1e-6, 1e-1), Sk_v=(1e-6, 1e-1),
+                    h_ref=(5.0, 12.0), v_tect=(-0.05, 0.05),
+                    v0=(-0.005, 0.005), v1=(-0.002, 0.002)),
+        form3_eligible=False, seed=42,
+    )
+    best = fit["best_variant"]
+    assert best in fit["all_variants"]
+    assert np.isnan(fit["all_variants"][best]["kge_val"]), "val KGE should be NaN"
+    # Selected variant must be the cal-KGE argmax (principled, not arbitrary).
+    cal_best = max(fit["all_variants"],
+                   key=lambda v: fit["all_variants"][v]["kge_cal"])
+    assert best == cal_best
