@@ -76,11 +76,12 @@ KGE_TIERS = [
 NAN_COLOR = "lightgray"
 NAN_LABEL = "n/a"
 
+# M4_tau (form3 / linear v_tect) retired from production — never selected as
+# best across all stations/runs — so the variant map is a 1x3 panel.
 VARIANT_COLORS = {
     "M1":     "tab:blue",
     "M2":     "tab:green",
     "M3_tau": "tab:red",
-    "M4_tau": "tab:orange",
 }
 VARIANTS = list(VARIANT_COLORS.keys())
 
@@ -154,13 +155,13 @@ def plot_station_map(merged: pd.DataFrame, out_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def plot_variant_map(merged: pd.DataFrame, out_path: Path) -> None:
-    """2x2 panel showing spatial distribution of the selected best variant."""
+    """1x3 panel showing spatial distribution of the selected best variant."""
     _setup()
     fig, axes = plt.subplots(
-        2, 2, figsize=(11, 11),
+        1, 3, figsize=(16.5, 6.0),
         sharex=True, sharey=True,
         constrained_layout=True,
-        gridspec_kw={"hspace": 0.12, "wspace": 0.05},
+        gridspec_kw={"wspace": 0.05},
     )
 
     for idx, (ax, v) in enumerate(zip(axes.flat, VARIANTS)):
@@ -200,10 +201,10 @@ def plot_variant_map(merged: pd.DataFrame, out_path: Path) -> None:
         ax.legend(handles=handles, loc="best", fontsize=8, framealpha=0.85,
                   edgecolor="black")
 
-    for ax in axes[-1, :]:
+    # Single row: every panel gets an x-label; only the leftmost gets a y-label.
+    for ax in axes:
         ax.set_xlabel("Easting (TWD97 m)", fontweight="bold")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Northing (TWD97 m)", fontweight="bold")
+    axes[0].set_ylabel("Northing (TWD97 m)", fontweight="bold")
 
     fig.suptitle("Selected best variant -- spatial distribution",
                  fontweight="bold", fontsize=13)

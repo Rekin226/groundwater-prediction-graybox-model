@@ -11,15 +11,22 @@ from scipy.optimize import differential_evolution, curve_fit
 from subsidence.sub_subroutine import simulate_form2, simulate_form3
 from subsidence.sub_metrics import kge_components, rmse, r2, kge_on_rate
 
-# 4-variant 2x2: form (Form 2 / Form 3) × v_tect form (constant / linear).
-# Linear-v_tect bounds (v0, v1) frequently saturate at the new tight corner
-# under the rate-augmented loss — but empirically the linear form contributes
-# real signal beyond what constant v_tect can capture (likely a slow
-# time-varying drift such as frame instability or non-poroelastic regional
-# response).  Dropping M2/M4 in a v3 trial degraded median val KGE by 0.21
-# and worsened 16/27 stations with 0 improvements.  Bound-saturation is
-# documented and reported transparently rather than worked around.
-VARIANTS = ("M1", "M2", "M3_tau", "M4_tau")
+# Production variants: form (Form 2 / Form 3) × v_tect form (constant / linear),
+# minus the over-parameterized form3+linear corner.
+#   M1 = form2 / const v_tect    M2 = form2 / linear v_tect
+#   M3_tau = form3 / const v_tect
+# M4_tau (form3 / linear v_tect) is RETIRED from production: it is the most
+# flexible variant (6 free params) and was never selected as best — 0 wins
+# across all 33 stations and all 7 historical runs (v11–v17), with the worst
+# val-KGE median; dropping it costs exactly 0.000 out-of-sample skill.  The
+# 2×2 factorial is still reported in the manuscript with M4 documented as the
+# over-fit corner.
+# The linear-v_tect variants (M2) are NOT dropped — the linear form contributes
+# real signal beyond constant v_tect (a v3 trial dropping M2/M4 together
+# degraded median val KGE by 0.21, worsening 16/27 stations with 0 gains).
+# Linear-v_tect bound-saturation (v0, v1) is documented and reported
+# transparently rather than worked around.
+VARIANTS = ("M1", "M2", "M3_tau")
 
 
 def _form_for(variant: str) -> str:
