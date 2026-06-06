@@ -104,5 +104,43 @@ def test_audit_cli_end_to_end_on_tmpdir(tmp_path):
     assert out.shape[0] == 1
     expected_cols = {"sub_id", "fill_fraction", "fill_fraction_high",
                      "n_eff", "persistence_kge_val", "model_beats_persistence",
-                     "kge_detrended_val", "rate_loss_active"}
+                     "kge_detrended_val", "rate_loss_active",
+                     "val_obs_fraction", "driver_synthetic_val",
+                     "nonstationary_coupling"}
     assert expected_cols.issubset(set(out.columns))
+
+
+def test_driver_synthetic_val_fires_below_threshold():
+    m = _mod()
+    idx = pd.date_range("2024-01-01", "2025-03-31", freq="D")
+    # Fully model_fill in the val window → 0% observed → flagged.
+    synth = pd.DataFrame({"driver_source": ["model_fill"] * len(idx)}, index=idx)
+    frac = m.compute_val_obs_fraction(synth, "2024-01-01", "2025-03-31")
+    assert frac == 0.0
+    assert m.flag_driver_synthetic_val(frac) is True
+    # Mostly observed → not flagged.
+    obs = pd.DataFrame({"driver_source": ["obs"] * len(idx)}, index=idx)
+    frac2 = m.compute_val_obs_fraction(obs, "2024-01-01", "2025-03-31")
+    assert frac2 == 1.0
+    assert m.flag_driver_synthetic_val(frac2) is False
+
+
+def test_driver_synthetic_val_nan_without_datetime_index():
+    m = _mod()
+    df = pd.DataFrame({"driver_source": ["model_fill"] * 10})  # no datetime index
+    frac = m.compute_val_obs_fraction(df, "2024-01-01", "2025-03-31")
+    assert np.isnan(frac)
+    assert m.flag_driver_synthetic_val(frac) is False
+
+
+def test_nonstationary_coupling_separates_breakdown_from_healthy():
+    m = _mod()
+    # High cal r, collapsed val r → flagged (the r-failure signature).
+    assert m.flag_nonstationary_coupling(0.90, -0.31) is True
+    assert m.flag_nonstationary_coupling(0.84, 0.15) is True
+    # Healthy station keeps r_val ≥ 0.2 → never flagged.
+    assert m.flag_nonstationary_coupling(0.85, 0.40) is False
+    # Low cal r (model never matched) → not this family.
+    assert m.flag_nonstationary_coupling(0.30, -0.10) is False
+    # NaN (e.g. deep-retired, no val) → not flagged.
+    assert m.flag_nonstationary_coupling(0.9, float("nan")) is False

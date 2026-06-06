@@ -22,6 +22,53 @@ FILL_FRACTION_HIGH = 0.50
 PAIRING_TIE_FRAC = 0.10
 RING_THRESHOLD_GRID = [(8, 2), (12, 3), (16, 4)]
 
+# driver_synthetic_val: fraction of OBSERVED head in the validation window below
+# which the val forcing is treated as essentially synthetic (GW-model gap-fill).
+# Stations cluster sharply at either 0% (fully model_fill in val) or ≥65%
+# observed, so the 20% cutoff cleanly isolates the synthetic-driver group.
+DRIVER_SYNTHETIC_VAL_MAX_OBS = 0.20
+
+# nonstationary_coupling: high calibration correlation that collapses in
+# validation — the head↔displacement relationship is non-stationary so
+# calibrated parameters do not extrapolate.  Good stations keep r_val ≥ 0.2 and
+# are never flagged.  Replaces an earlier (rejected) "low_signal" detrended-std
+# classifier, which mislabelled trend-dominated MLCW stations whose signal IS
+# the trend it removed.
+NONSTAT_R_CAL_MIN = 0.50
+NONSTAT_R_VAL_MAX = 0.20
+
+
+def compute_val_obs_fraction(h_df: pd.DataFrame, val_start, val_end) -> float:
+    """Fraction of validation-window cells whose driver came from observation.
+
+    Requires a DatetimeIndex to delimit the val window; returns NaN when the
+    index is not datetime (e.g. the synthetic CSV test fixture), in which case
+    the synthetic-driver flag is left False rather than guessed.
+    """
+    if "driver_source" not in h_df.columns:
+        return float("nan")
+    if not isinstance(h_df.index, pd.DatetimeIndex):
+        return float("nan")
+    win = h_df.loc[(h_df.index >= val_start) & (h_df.index <= val_end)]
+    n = len(win)
+    if n == 0:
+        return float("nan")
+    obs = int(win["driver_source"].isin(["obs", "observed"]).sum())
+    return obs / n
+
+
+def flag_driver_synthetic_val(val_obs_frac: float) -> bool:
+    """True when the validation-window forcing is essentially synthetic."""
+    return bool(np.isfinite(val_obs_frac)
+                and val_obs_frac < DRIVER_SYNTHETIC_VAL_MAX_OBS)
+
+
+def flag_nonstationary_coupling(r_cal: float, r_val: float) -> bool:
+    """True when calibration correlation is high but validation correlation
+    collapses — non-stationary head↔displacement coupling."""
+    return bool(np.isfinite(r_cal) and np.isfinite(r_val)
+                and r_cal >= NONSTAT_R_CAL_MIN and r_val < NONSTAT_R_VAL_MAX)
+
 
 def compute_fill_fraction(h_df: pd.DataFrame) -> float:
     """Return fraction of cells where the driver came from fill (model_fill,
@@ -143,9 +190,20 @@ def _main(argv=None):
             ff = compute_fill_fraction(h_df)
             row["fill_fraction"] = ff
             row["fill_fraction_high"] = flag_high_fill_fraction(ff)
+            val_obs_frac = compute_val_obs_fraction(h_df, VAL_START, VAL_END)
+            row["val_obs_fraction"] = val_obs_frac
+            row["driver_synthetic_val"] = flag_driver_synthetic_val(val_obs_frac)
         else:
             row["fill_fraction"] = float("nan")
             row["fill_fraction_high"] = False
+            row["val_obs_fraction"] = float("nan")
+            row["driver_synthetic_val"] = False
+
+        # r-failure decomposition: non-stationary head↔displacement coupling
+        # (high cal correlation, collapsed val correlation).  r components come
+        # straight from the best-variant fit row.
+        row["nonstationary_coupling"] = flag_nonstationary_coupling(
+            r.get("kge_r_cal", float("nan")), r.get("kge_r_val", float("nan")))
 
         # Load per-station GPR time series for §8 classifiers
         gpr_csv = per_station / f"{sub_id}_gpr.csv"
@@ -194,16 +252,20 @@ def _main(argv=None):
     high_fill = sum(1 for r in rows if r.get("fill_fraction_high"))
     rate_active = sum(1 for r in rows if r.get("rate_loss_active"))
     beats_pers = sum(1 for r in rows if r.get("model_beats_persistence"))
+    synth_val = sum(1 for r in rows if r.get("driver_synthetic_val"))
+    nonstat = sum(1 for r in rows if r.get("nonstationary_coupling"))
     lines = [
         f"Audit classifiers summary — {args.run_dir}",
         f"n_stations = {n_total}",
         f"  §7 high_fill_fraction (>50% non-obs):     {high_fill}/{n_total}",
+        f"  §7 driver_synthetic_val (<20% val obs-h): {synth_val}/{n_total}",
         f"  §8 rate_loss_active (chosen variant):      {rate_active}/{n_total}",
         f"  §8 n_eff median (cumulative ζ):            "
         f"{np.nanmedian([r['n_eff'] for r in rows]):.1f}",
         f"  §8 model_beats_persistence (val window):   {beats_pers}/{n_total}",
         f"  §8 persistence_kge_val median:             "
         f"{np.nanmedian([r['persistence_kge_val'] for r in rows]):.3f}",
+        f"  r-fail nonstationary_coupling (r_cal≥.5,r_val<.2): {nonstat}/{n_total}",
     ]
     out_txt.write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
