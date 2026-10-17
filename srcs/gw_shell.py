@@ -331,6 +331,19 @@ def estimate_initial_params_inland(
 TAU_MIN, TAU_MAX = 0.1, 30.0
 KERNEL_MAX_LAG = 90
 
+# Bounds without a physical limit, set wide enough that they rarely bind:
+# - z (equilibrium/drainage base head) may lie well below the observed range;
+#   lower bound at h_min - max(5 m, 2 x observed range).
+# - c (diurnal-amplitude coefficient): upper bound c_est + max(5, 5|c_est|).
+# - h_sea (effective coastal boundary head): mean head +/- 30 m.
+# - lambda (filter rate): up to 1, where the filtered variant equals the direct one.
+Z_LOWER_PAD_MIN = 5.0
+Z_LOWER_RANGE_FACTOR = 2.0
+C_WIDTH_MIN = 5.0
+C_WIDTH_FACTOR = 5.0
+H_SEA_HALF_RANGE = 30.0
+LAMBDA_MIN, LAMBDA_MAX = 0.01, 1.0
+
 # The b estimate above regresses daily head change on same-day rainfall. With a
 # unit-sum rainfall kernel, a response spread over tau days needs a gain up to
 # the unnormalised kernel mass at TAU_MAX larger than that same-day estimate, so
@@ -362,7 +375,7 @@ def estimate_bounds_inland(
     h_min = float(np.min(h_obs))
     h_max = float(np.max(h_obs))
     pad = max(1.0, 0.1 * (h_max - h_min))
-    z_min = h_min - pad
+    z_min = h_min - max(Z_LOWER_PAD_MIN, Z_LOWER_RANGE_FACTOR * (h_max - h_min))
     z_max = h_max + pad
 
     # a bounds: recession strength
@@ -392,7 +405,7 @@ def estimate_bounds_inland(
     valid_amp = AMP_short != 0
     if np.any(valid_amp) and np.var(AMP_short[valid_amp]) > 0:
         c_est = -np.cov(dh[valid_amp], AMP_short[valid_amp])[0, 1] / np.var(AMP_short[valid_amp])
-        width_c = max(0.5, abs(c_est))
+        width_c = max(C_WIDTH_MIN, C_WIDTH_FACTOR * abs(c_est))
         c_min = 0.0
         c_max = max(c_min + 0.1, c_est + width_c)
     else:
@@ -446,7 +459,7 @@ def estimate_bounds_coastal(
     h_max = float(np.max(h_obs))
     h_mean = float(np.mean(h_obs))
     pad = max(1.0, 0.1 * (h_max - h_min))
-    z_min = h_min - pad
+    z_min = h_min - max(Z_LOWER_PAD_MIN, Z_LOWER_RANGE_FACTOR * (h_max - h_min))
     z_max = h_max + pad
 
     # a bounds
@@ -477,7 +490,7 @@ def estimate_bounds_coastal(
     valid_amp = AMP_short != 0
     if np.any(valid_amp) and np.var(AMP_short[valid_amp]) > 0:
         c_est = -np.cov(dh[valid_amp], AMP_short[valid_amp])[0, 1] / np.var(AMP_short[valid_amp])
-        width_c = max(0.5, abs(c_est))
+        width_c = max(C_WIDTH_MIN, C_WIDTH_FACTOR * abs(c_est))
         c_min = 0.0
         c_max = max(c_min + 0.1, c_est + width_c)
     else:
@@ -516,8 +529,8 @@ def estimate_bounds_coastal(
     k_sgd_min, k_sgd_max = _ensure_bounds_spread(k_sgd_min, k_sgd_max, min_width=0.01)
 
     # h_sea: effective sea level around mean groundwater
-    h_sea_min = h_mean - 10.0
-    h_sea_max = h_mean + 10.0
+    h_sea_min = h_mean - H_SEA_HALF_RANGE
+    h_sea_max = h_mean + H_SEA_HALF_RANGE
     h_sea_min, h_sea_max = _ensure_bounds_spread(h_sea_min, h_sea_max, min_width=0.5)
 
     z_min, z_max = _ensure_bounds_spread(z_min, z_max, min_width=0.5)
@@ -776,7 +789,7 @@ def _fit_model(
 
     elif model_name == "filtered":
         model_func = sub.gw_model_wrapper_filtered
-        lambda_min, lambda_max = _ensure_bounds_spread(0.01, 0.8, min_width=0.05)
+        lambda_min, lambda_max = _ensure_bounds_spread(LAMBDA_MIN, LAMBDA_MAX, min_width=0.05)
         if is_coastal:
             lower, upper = estimate_bounds_coastal(h_obs_cal, rain_cal, amp_cal, amt_cal, h_up_cal, no_upstream=no_upstream)
             param_names = ["a", "z", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
@@ -814,7 +827,7 @@ def _fit_model(
     elif model_name == "filtered_tz":
         model_func = sub.gw_model_wrapper_filtered_tz
         z1_lo, z1_hi = -2.0, 2.0
-        lambda_min, lambda_max = _ensure_bounds_spread(0.01, 0.8, min_width=0.05)
+        lambda_min, lambda_max = _ensure_bounds_spread(LAMBDA_MIN, LAMBDA_MAX, min_width=0.05)
         if is_coastal:
             lower, upper = estimate_bounds_coastal(h_obs_cal, rain_cal, amp_cal, amt_cal, h_up_cal, no_upstream=no_upstream)
             param_names = ["a", "z0", "z1", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
