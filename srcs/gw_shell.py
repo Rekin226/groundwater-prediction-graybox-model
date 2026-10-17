@@ -654,9 +654,12 @@ def run_global_optimization(
     base_p0: np.ndarray = None,
     popsize: int = 15,
     maxiter: int = 500,
+    seed: int = 42,
     **model_kwargs,
 ):
     """Global optimisation with differential_evolution, then local polish with curve_fit for pcov.
+
+    seed drives both the Latin-hypercube initial population and the DE stream.
 
     Returns (best_popt, best_pcov, best_rmse).
     pcov is None if the polish step fails.
@@ -669,7 +672,7 @@ def run_global_optimization(
 
     # Seed the population: first row is the regression-based guess (if available),
     # the rest is a Latin-hypercube sample scaled across the parameter bounds.
-    lhs = qmc.LatinHypercube(d=n_params, seed=42)
+    lhs = qmc.LatinHypercube(d=n_params, seed=seed)
     unit_pop = lhs.random(n=popsize * n_params)          # samples in [0, 1)
     pop = qmc.scale(unit_pop, lower_arr, upper_arr)       # scaled to [lower, upper]
     if base_p0 is not None:
@@ -690,7 +693,7 @@ def run_global_optimization(
         init=pop,
         maxiter=maxiter,
         tol=1e-5,
-        seed=42,
+        seed=seed,
         workers=1,
         polish=False,
     )
@@ -735,7 +738,14 @@ def _fit_model(
     no_upstream: bool,
     model_name: str,
     n_starts: int = 15,
+    seed: int = 42,
+    fixed: Optional[dict] = None,
 ):
+    """Fit one variant on the calibration period and score it on all periods.
+
+    fixed maps parameter names to values held constant during the fit (used for
+    profile likelihoods and reduced benchmark models).
+    """
     t, rainfall, amp, amt, h_up, h_obs, time_index, doy = fit_preprocess(
         df_merge,
         rain_lag_days=rain_lag_days,
@@ -859,6 +869,16 @@ def _fit_model(
     )
 
 
+    # Hold fixed parameters at their value with a negligible bound width
+    # (the optimisers need lower < upper).
+    for name, value in (fixed or {}).items():
+        if name not in param_names:
+            raise KeyError(f"Cannot fix '{name}': not a parameter of {model_name} ({param_names})")
+        i = param_names.index(name)
+        eps = 1e-9 * max(1.0, abs(value))
+        lower[i], upper[i] = value - eps, value + eps
+        base_p0[i] = value
+
     model_kwargs = dict(
         rainfall=rain_cal, amp=amp_cal,
         amt=amt_cal if is_coastal else None,
@@ -872,6 +892,7 @@ def _fit_model(
         bounds=(lower, upper),
         base_p0=base_p0,
         popsize=n_starts,
+        seed=seed,
         **model_kwargs,
     )
 
@@ -1128,6 +1149,18 @@ def _plot_station(model_results: list, best_model: dict, station_label: str,
     plt.close(fig)
 
 
+def parse_fixed(spec) -> dict:
+    """Parse 'name=value;name=value' into {name: float}; empty/NaN gives {}."""
+    if spec is None or (isinstance(spec, float) and np.isnan(spec)) or not str(spec).strip():
+        return {}
+    out = {}
+    for item in str(spec).split(";"):
+        if item.strip():
+            name, value = item.split("=")
+            out[name.strip()] = float(value)
+    return out
+
+
 def estimate_lags_calibration(df_merge: pd.DataFrame, no_upstream: bool, max_lag: int) -> Tuple[int, int]:
     """Rainfall and upstream lags from the calibration period only."""
     df_cal = calibration_slice(df_merge)
@@ -1165,6 +1198,8 @@ def run_station(args_params: dict) -> None:
     )
 
     model_list = [m.strip() for m in args.get("models", ",".join(VARIANT_ORDER)).split(",")]
+    seed = int(args.get("seed", 42))
+    fixed = parse_fixed(args.get("fixed", ""))
     model_results = []
     for model_name in model_list:
         result = _fit_model(
@@ -1174,6 +1209,8 @@ def run_station(args_params: dict) -> None:
             up_lag_days=up_lag_days,
             no_upstream=no_upstream,
             model_name=model_name,
+            seed=seed,
+            fixed=fixed,
         )
         if result is not None:
             model_results.append(result)
@@ -1187,10 +1224,11 @@ def run_station(args_params: dict) -> None:
     selection_basis = "sel" if np.isfinite(best_model["metrics"]["sel"]["kge_ab"]) else "cal"
 
     station_label = args.get('st_id', args.get('gw_st', 'unknown'))
-    _plot_station(model_results, best_model, station_label, group_name,
-                  rf_label=args.get('rf_id', ''),
-                  amp_label=args.get('gw_st', args.get('st_id', '')),
-                  output_root=output_root)
+    if os.environ.get("GW_SKIP_PLOTS", "") != "1":
+        _plot_station(model_results, best_model, station_label, group_name,
+                      rf_label=args.get('rf_id', ''),
+                      amp_label=args.get('gw_st', args.get('st_id', '')),
+                      output_root=output_root)
 
     # --- Save results ---
     n_full = len(best_model["time_index_full"])
@@ -1207,6 +1245,8 @@ def run_station(args_params: dict) -> None:
         'n_sel': best_model["n_sel_end"] - best_model["n_cal"],
         'n_test': n_full - best_model["n_sel_end"],
         'stft_align': STFT_ALIGN,
+        'seed': seed,
+        'fixed': args.get("fixed", "") or "",
     }
 
     results = {**meta, **_result_row(best_model)}

@@ -55,6 +55,15 @@ def build_station_arguments(row: pd.Series) -> dict:
     # coastal / inland
     args["group_name"] = str(row["group"])
 
+    # Optional per-station overrides (columns may be absent or blank):
+    #   models  comma-separated variants to fit at this station
+    #   fixed   "name=value;..." parameters held constant
+    #   seed    optimiser seed
+    for col in ("models", "fixed", "seed"):
+        val = row.get(col)
+        if val is not None and not pd.isna(val) and str(val).strip():
+            args[col] = str(int(val)) if col == "seed" else str(val)
+
     return args
 
 
@@ -96,7 +105,7 @@ def _run_single_station(task: tuple) -> None:
     row = pd.Series(row_dict)
     args_dict = build_station_arguments(row)
     args_dict["output_root"] = output_root_str
-    args_dict["models"] = models_str
+    args_dict.setdefault("models", models_str)
     station_label = args_dict.get('st_id', args_dict.get('gw_st', 'unknown'))
     print(f"Running station st_id={station_label} group={args_dict['group_name']} models={models_str}")
     gw_shell.run_station(args_dict)

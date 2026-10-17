@@ -190,3 +190,20 @@ def test_test_period_does_not_leak_into_fit_or_selection():
     best = max(fits, key=gw_shell.selection_score)["model"]
     best_p = max(fits_p, key=gw_shell.selection_score)["model"]
     assert best == best_p
+
+
+@pytest.mark.slow
+def test_fixed_parameters_are_held_and_parse():
+    assert gw_shell.parse_fixed("c=0; k_link=0.0") == {"c": 0.0, "k_link": 0.0}
+    assert gw_shell.parse_fixed(float("nan")) == {}
+    df = _synthetic_merge()
+    r = gw_shell._fit_model(df, group_name="inland", rain_lag_days=0, up_lag_days=0,
+                            no_upstream=False, model_name="base", n_starts=3,
+                            fixed={"c": 0.0, "tau_rain": 12.0})
+    p = dict(zip(r["param_names"], r["params"]))
+    assert p["c"] == pytest.approx(0.0, abs=1e-8)
+    assert p["tau_rain"] == pytest.approx(12.0, rel=1e-8)
+    with pytest.raises(KeyError):
+        gw_shell._fit_model(df, group_name="inland", rain_lag_days=0, up_lag_days=0,
+                            no_upstream=False, model_name="base", n_starts=3,
+                            fixed={"k_sgd": 0.1})
