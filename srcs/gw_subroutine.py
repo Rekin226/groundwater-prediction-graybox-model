@@ -3,6 +3,36 @@ from typing import List, Optional, Tuple
 
 
 ###############################################################################
+# Memory kernels
+###############################################################################
+
+
+def exp_kernel(tau: float, max_lag: int) -> np.ndarray:
+	"""Exponential memory kernel over lags 0..max_lag, normalised to unit sum.
+
+	Normalisation makes tau control only the temporal shape of the response;
+	the overall gain is carried entirely by the coefficient that multiplies the
+	convolved input (b for rainfall, k_link for upstream head). Without it the
+	kernel mass grows roughly linearly with tau, so gain and memory trade off.
+	"""
+	w = np.exp(-np.arange(max_lag + 1, dtype=float) / max(tau, 1e-6))
+	return w / w.sum()
+
+
+def memory_convolve(x: np.ndarray, tau: float, max_lag: int, pad_value: float) -> np.ndarray:
+	"""Causal convolution out[i] = sum_k w[k] * x[i - k] with a normalised kernel.
+
+	Samples before the record start are taken as pad_value: 0 for rainfall
+	(no antecedent rain assumed), the first value for heads, so that the
+	smoothed head is a weighted mean of heads rather than ramping up from zero.
+	"""
+	w = exp_kernel(tau, max_lag)
+	x = np.asarray(x, dtype=float)
+	padded = np.concatenate([np.full(max_lag, pad_value), x])
+	return np.convolve(padded, w, mode='full')[max_lag:max_lag + len(x)]
+
+
+###############################################################################
 # Gray-box model simulators (discrete-time Euler, dt = 1)
 ###############################################################################
 
@@ -27,11 +57,8 @@ def simulate_inland(
 	max_lag = min(90, n - 1)  # 90 days covers >95% of exponential kernel for tau up to 30
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	for i in range(1, n):
 		r_eff    = r_conv[i - 1]
@@ -71,11 +98,8 @@ def simulate_coastal(
 	max_lag = min(90, n - 1)
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	for i in range(1, n):
 		r_eff    = r_conv[i - 1]
@@ -115,11 +139,8 @@ def simulate_inland_filtered(
 	max_lag = min(90, n - 1)
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	for i in range(1, n):
@@ -161,11 +182,8 @@ def simulate_coastal_filtered(
 	max_lag = min(90, n - 1)
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	for i in range(1, n):
@@ -214,11 +232,8 @@ def simulate_inland_tz(
 	max_lag = min(90, n - 1)
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	t_f = t.astype(float)
 	for i in range(1, n):
@@ -257,11 +272,8 @@ def simulate_coastal_tz(
 	max_lag = min(90, n - 1)
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	t_f = t.astype(float)
 	for i in range(1, n):
@@ -300,11 +312,8 @@ def simulate_inland_filtered_tz(
 	max_lag = min(90, n - 1)
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	t_f = t.astype(float)
@@ -344,11 +353,8 @@ def simulate_coastal_filtered_tz(
 	max_lag = min(90, n - 1)
 	if max_lag < 0:
 		return h
-	lag_idx = np.arange(max_lag + 1, dtype=float)
-	wt_rain = np.exp(-lag_idx / max(tau_rain, 1e-6))
-	wt_up = np.exp(-lag_idx / max(tau_up, 1e-6))
-	r_conv    = np.convolve(rainfall, wt_rain, mode='full')
-	h_up_conv = np.convolve(h_up,    wt_up,   mode='full')
+	r_conv    = memory_convolve(rainfall, tau_rain, max_lag, pad_value=0.0)
+	h_up_conv = memory_convolve(h_up, tau_up, max_lag, pad_value=float(h_up[0]))
 	u = float(h_up[0]) if len(h_up) > 0 else 0.0
 	_doy = doy if doy is not None else np.ones(n) * 180.0
 	t_f = t.astype(float)

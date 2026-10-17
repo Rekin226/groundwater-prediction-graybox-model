@@ -48,15 +48,15 @@ where `z_t = z` (constant-z) or `z_t = z0 + z1·(t/365.25)` (z(t) variants).
 - `gamma` — semi-diurnal tidal response (coastal only)
 - `h_sea` — effective sea level (coastal only)
 - `d_sin`, `d_cos` — seasonal cycle amplitude (annual, decomposed)
-- `R_eff`, `h_up_eff` — exponentially weighted (convolved) rainfall and upstream GWL with time constants `tau_rain`, `tau_up` (convolution window = 90 days)
+- `R_eff`, `h_up_eff` — rainfall and upstream GWL convolved with unit-sum exponential kernels (time constants `tau_rain`, `tau_up`; window = 90 days). Because the kernels sum to 1, `tau` sets only the response shape and `b` / `k_link` carry the gain
 - `AMP` / `AMT` — diurnal (~1 cpd) and semi-diurnal (~1.93 cpd) tidal amplitudes extracted by STFT of hourly GWL
 
 ### Calibration
 
 - **Optimizer**: `scipy.optimize.differential_evolution` (global) + `curve_fit` polish for `pcov`.
-- **Temporal split**: calibration on data before `SPLIT_DATE` (default 2019-01-01); validation on data from that date onward.
-- **Validation hindcast**: continuous across the split — `h0_val = y_fit_cal[-1]` for all variants (no cold-start at the seam).
-- **Model selection**: best of the four variants by **`KGE_val`** (highest out-of-sample KGE).
+- **Temporal split** (`CAL_END`, `SEL_END` in `gw_shell.py`): calibration 2012–2018, selection 2019–2020, test 2021–2022. Pairing, classification and lags use calibration data only; variant choice and pairing refinement use the selection period only; the test period is scored once and drives no decision.
+- **Simulation**: one continuous run over the whole record with the calibrated parameters (no restart at period boundaries).
+- **Model selection**: best of the four variants by selection-period **`kge_ab`** (KGE with additive bias, datum-invariant); calibration `kge_ab` if the selection period is too short.
 
 ## Pipeline overview
 
@@ -291,10 +291,10 @@ python srcs/04_diag_pairing_search.py \
 |---|---|
 | Optimizer | `scipy.optimize.differential_evolution` (global) + `curve_fit` polish |
 | Variants fit per station | 4 (base, filtered, base_tz, filtered_tz) |
-| Model selection | `KGE_val` (highest out-of-sample KGE) |
-| Temporal split | Calibration before `SPLIT_DATE` (default 2019-01-01); validation onward |
-| Validation hindcast | Continuous: `h0_val = y_fit_cal[-1]` across all variants |
-| Metrics recorded | `rmse`, `r2`, `kge`, `rmse_val`, `r2_val`, `kge_val` + KGE decomposition (`kge_r`, `kge_alpha`, `kge_beta`, `bias`) |
+| Model selection | Selection-period `kge_ab` |
+| Temporal split | Calibration ≤ `CAL_END` (2018-12-31), selection ≤ `SEL_END` (2020-12-31), test after |
+| Simulation | Continuous over the whole record with calibrated parameters |
+| Metrics recorded | Per period (`_cal`, `_sel`, `_test`): `r2`/`nse`, `rmse`, `mae`, `bias`, classic `kge` (+ `kge_r`, `kge_alpha`, `kge_beta`), `kge_ab` (+ `kge_ab_beta`) |
 | Parameter uncertainty | Standard errors from `pcov` → `{param}_std` |
 | Convolution window | 90 days (covers >95% of exponential kernel for `tau` up to 30 d) |
 | Parallelism | `multiprocessing.Pool` — one worker per active station |
@@ -306,15 +306,15 @@ python srcs/04_diag_pairing_search.py \
 | `st_id`, `gw_st`, `ups_id`, `rf_id` | Station identifiers |
 | `group_name` | `inland` or `coastal` |
 | `rain_lag_days`, `up_lag_days` | Estimated input lags |
-| `model` | Selected variant: `base` / `filtered` / `base_tz` / `filtered_tz` |
-| `rmse`, `r2`, `kge` | Calibration-period metrics |
-| `rmse_val`, `r2_val`, `kge_val` | Validation-period metrics |
-| `kge_r_val`, `kge_alpha_val`, `kge_beta_val`, `bias_val` | KGE decomposition on validation period |
+| `model`, `selection_basis` | Selected variant and the period it was chosen on (`sel`, or `cal` as fallback) |
+| `n_cal`, `n_sel`, `n_test` | Daily records in each period |
+| `{metric}_{cal,sel,test}` | Metrics per period (see above) |
+| `{param}_at_bound` | Fitted value within 0.1% of the bound range at either end |
 | `a`, `z` (or `z0`, `z1`), `b`, `c`, `k_link`, `lambda`, `tau_rain`, `tau_up`, `d_sin`, `d_cos` | Fitted parameters |
 | `k_sgd`, `gamma`, `h_sea` | Extra coastal parameters |
 | `{param}_std` | Parameter standard errors from `pcov` |
 
-`all_variants_results.csv` has the same columns but one row per (station × variant), for cross-variant comparisons.
+`all_variants_results.csv` has one row per (station × variant) with metrics, parameters and a `selected` flag. `series/{st_id}.csv` holds daily observed and simulated heads for every variant, with a period label.
 
 ## Station configuration (`gray_box_input.csv`)
 

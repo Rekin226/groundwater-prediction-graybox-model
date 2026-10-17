@@ -1,12 +1,12 @@
-"""Boxplot of KGE across 61 stations, calibration vs validation, split by group.
+"""Boxplot of KGE across 61 stations, calibration / selection / test, split by group.
 
-Layout: 4 rows (M1-M4 variants) x 2 columns (Calibration / Validation).
+Layout: 4 rows (M1-M4 variants) x 3 columns (Calibration / Selection / Test).
 Each panel shows two boxes — Inland (n=54) vs Coastal (n=7) — of KGE values
 across stations, with outliers as dots and a dashed zero-line.
 
 Inputs
 ------
-- workspace/results/<run_id>/all_variants_results.csv  (st_id, model, kge, kge_val)
+- workspace/results/<run_id>/all_variants_results.csv  (st_id, model, kge_ab_cal, kge_ab_sel, kge_ab_test)
 - workspace/results/<run_id>/gw_fit_results.csv        (st_id -> group_name lookup)
 
 Output
@@ -15,8 +15,8 @@ workspace/results/<run_id>/figures/boxplot_kge_by_group.tiff
 
 Notes
 -----
-- Rows flagged ``kge_ill_conditioned`` are excluded from aggregate box statistics
-  (same convention the Makefile ``compare`` target applies to KGE summaries).
+- KGE here is the additive-bias form (kge_ab), which is datum-invariant, so no
+  station needs to be excluded for a near-zero mean head.
 - KGE values are clipped to [ymin, ymax] for display so extreme outliers stack at
   the axis edge as dots (matches the reference layout). Box quartiles and whiskers
   are unaffected in practice because the clipped points are already far-outliers.
@@ -58,14 +58,14 @@ GROUP_ORDER = ["inland", "coastal"]
 GROUP_COLORS = {"inland": "#3a6f95", "coastal": "#e27575"}
 GROUP_DISPLAY = {"inland": "Inland", "coastal": "Coastal"}
 
-PHASE_ORDER = [("kge", "Calibration"), ("kge_val", "Validation")]
+PHASE_ORDER = [("kge_ab_cal", "Calibration"), ("kge_ab_sel", "Selection"), ("kge_ab_test", "Test")]
 
 
-def _load_data(variants_csv: Path, fit_csv: Path) -> tuple[pd.DataFrame, int]:
+def _load_data(variants_csv: Path, fit_csv: Path) -> pd.DataFrame:
     variants = pd.read_csv(variants_csv)
     fit = pd.read_csv(fit_csv)
 
-    for col in ("st_id", "model", "kge", "kge_val"):
+    for col in ("st_id", "model", *(c for c, _ in PHASE_ORDER)):
         if col not in variants.columns:
             raise ValueError(f"{variants_csv} missing required column: {col}")
     if "st_id" not in fit.columns or "group_name" not in fit.columns:
@@ -80,16 +80,9 @@ def _load_data(variants_csv: Path, fit_csv: Path) -> tuple[pd.DataFrame, int]:
     if missing_group:
         raise ValueError(f"{missing_group} rows in {variants_csv} have no group mapping in {fit_csv}")
 
-    merged["kge"] = pd.to_numeric(merged["kge"], errors="coerce")
-    merged["kge_val"] = pd.to_numeric(merged["kge_val"], errors="coerce")
-
-    n_excluded = 0
-    if "kge_ill_conditioned" in merged.columns:
-        ill = merged["kge_ill_conditioned"].fillna(False).astype(bool)
-        n_excluded = int(ill.sum())
-        merged = merged.loc[~ill].copy()
-
-    return merged, n_excluded
+    for col, _ in PHASE_ORDER:
+        merged[col] = pd.to_numeric(merged[col], errors="coerce")
+    return merged
 
 
 def _draw_panel(ax, data: pd.DataFrame, metric_col: str, group_counts: dict[str, int],
@@ -136,8 +129,8 @@ def plot_boxplot(df: pd.DataFrame, out_path: Path, ymin: float, ymax: float) -> 
                     for g in GROUP_ORDER}
 
     fig, axes = plt.subplots(
-        nrows=4, ncols=2,
-        figsize=(8.0, 12.5),
+        nrows=4, ncols=len(PHASE_ORDER),
+        figsize=(11.0, 12.5),
         sharey=True, sharex=True,
     )
 
@@ -154,7 +147,7 @@ def plot_boxplot(df: pd.DataFrame, out_path: Path, ymin: float, ymax: float) -> 
                 ax.set_ylabel(f"{variant_label}\nKGE", fontsize=11, fontweight="bold")
             ax.set_ylim(ymin, ymax)
 
-            add_panel_label(ax, "abcdefgh"[panel_idx], fontsize=11, fontweight="bold")
+            add_panel_label(ax, "abcdefghijkl"[panel_idx], fontsize=11, fontweight="bold")
             panel_idx += 1
 
     plt.tight_layout()
@@ -163,7 +156,7 @@ def plot_boxplot(df: pd.DataFrame, out_path: Path, ymin: float, ymax: float) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Boxplot of KGE by group (Inland/Coastal) for calibration vs validation, across 4 model variants.")
+        description="Boxplot of KGE by group (Inland/Coastal) for calibration, selection and test, across 4 model variants.")
     parser.add_argument("--run-id", default="final",
                         help="Run tag under workspace/results/ (default: final)")
     parser.add_argument("--variants-results", type=Path, default=None,
@@ -188,7 +181,7 @@ def main() -> int:
 
     setup_font()
 
-    df, n_excluded = _load_data(variants_csv, fit_csv)
+    df = _load_data(variants_csv, fit_csv)
     out_path = outdir / "boxplot_kge_by_group.tiff"
     plot_boxplot(df, out_path, args.ymin, args.ymax)
 
@@ -196,7 +189,6 @@ def main() -> int:
     n_coastal = int((df.loc[df["model"] == VARIANT_ORDER[0][0], "group_name"] == "coastal").sum())
     print(f"Wrote {out_path}")
     print(f"  Inland n={n_inland}, Coastal n={n_coastal}; "
-          f"excluded {n_excluded} ill-conditioned rows; "
           f"display clipped to [{args.ymin}, {args.ymax}]")
     return 0
 

@@ -5,9 +5,9 @@ fig1_station_map.py): WMS shaded-relief basemap, sea/river overlays, fan-boundar
 inset, NorthArrow + ScaleBar decorations, Times New Roman, 300 DPI TIFF via rklib.savefig.
 
 Thresholds follow project convention (KGE in 0-1 scale):
-- good:   kge_val >= 0.7
-- medium: 0.5 <= kge_val < 0.7
-- low:    kge_val < 0.5
+- good:   kge_ab_test >= 0.7
+- medium: 0.5 <= kge_ab_test < 0.7
+- low:    kge_ab_test < 0.5
 
 Outputs (workspace/results/<run_id>/figures/):
 - performance_good.tiff
@@ -75,14 +75,14 @@ VARIANT_DISPLAY = [
 
 def _read_results(results_csv: Path) -> pd.DataFrame:
     df = pd.read_csv(results_csv)
-    if "gw_st" not in df.columns or "kge_val" not in df.columns:
-        raise ValueError(f"Expected columns gw_st and kge_val in {results_csv}, got: {list(df.columns)}")
+    if "gw_st" not in df.columns or "kge_ab_test" not in df.columns:
+        raise ValueError(f"Expected columns gw_st and kge_ab_test in {results_csv}, got: {list(df.columns)}")
 
     df["gw_st"] = df["gw_st"].astype(str)
-    df["kge_val"] = pd.to_numeric(df["kge_val"], errors="coerce")
+    df["kge_ab_test"] = pd.to_numeric(df["kge_ab_test"], errors="coerce")
     df = df.drop_duplicates(subset=["gw_st"], keep="first")
 
-    cols = ["gw_st", "kge_val"]
+    cols = ["gw_st", "kge_ab_test"]
     if "st_id" in df.columns:
         cols.append("st_id")
     if "model" in df.columns:
@@ -126,7 +126,7 @@ def _make_station_gdf(results_df: pd.DataFrame, meta_df: pd.DataFrame) -> gpd.Ge
     merged = results_df.merge(meta_df, on="gw_st", how="left", suffixes=("", "_meta"))
     if "st_id" not in merged.columns and "st_id_meta" in merged.columns:
         merged["st_id"] = merged["st_id_meta"]
-    merged = merged.dropna(subset=["gw_TM_X97", "gw_TM_Y97", "kge_val"])
+    merged = merged.dropna(subset=["gw_TM_X97", "gw_TM_Y97", "kge_ab_test"])
 
     gdf = gpd.GeoDataFrame(
         merged,
@@ -350,9 +350,9 @@ def _plot_variant_grid(*, ctx: MapContext, stations: gpd.GeoDataFrame,
         ctx.draw_backdrop(ax)
 
         sub = stations[stations["model"] == variant] if "model" in stations.columns else stations.iloc[0:0]
-        good = sub[sub["kge_val"] >= kge_good]
-        med = sub[(sub["kge_val"] >= kge_med) & (sub["kge_val"] < kge_good)]
-        low = sub[sub["kge_val"] < kge_med]
+        good = sub[sub["kge_ab_test"] >= kge_good]
+        med = sub[(sub["kge_ab_test"] >= kge_med) & (sub["kge_ab_test"] < kge_good)]
+        low = sub[sub["kge_ab_test"] < kge_med]
 
         tier_handles = []
         for tier_df, color, lbl in (
@@ -438,10 +438,10 @@ def main() -> int:
     # Use a single "best" row per station for tier maps (same as prior behaviour after drop_duplicates)
     tier_stations = stations.drop_duplicates(subset=["gw_st"], keep="first")
 
-    good = tier_stations[tier_stations["kge_val"] >= args.kge_good]
-    medium = tier_stations[(tier_stations["kge_val"] >= args.kge_medium)
-                           & (tier_stations["kge_val"] < args.kge_good)]
-    low = tier_stations[tier_stations["kge_val"] < args.kge_medium]
+    good = tier_stations[tier_stations["kge_ab_test"] >= args.kge_good]
+    medium = tier_stations[(tier_stations["kge_ab_test"] >= args.kge_medium)
+                           & (tier_stations["kge_ab_test"] < args.kge_good)]
+    low = tier_stations[tier_stations["kge_ab_test"] < args.kge_medium]
 
     _plot_tier_map(
         ctx=ctx, points=good,

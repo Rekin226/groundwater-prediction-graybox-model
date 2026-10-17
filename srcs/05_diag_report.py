@@ -32,8 +32,10 @@ def build_diagnostics(
     if "group_name" in df.columns and "group" not in df.columns:
         df["group"] = df["group_name"]
 
-    df["kge_val"] = _to_num(df["kge_val"]) if "kge_val" in df.columns else np.nan
-    df_low = df[df["kge_val"].notna() & (df["kge_val"] < kge_threshold)].copy()
+    # Diagnostics guide pairing/structure decisions, so they use the selection
+    # period, never the test period.
+    df["kge_ab_sel"] = _to_num(df["kge_ab_sel"]) if "kge_ab_sel" in df.columns else np.nan
+    df_low = df[df["kge_ab_sel"].notna() & (df["kge_ab_sel"] < kge_threshold)].copy()
 
     if gray_box_input is not None and "st_id" in gray_box_input.columns and "st_id" in df_low.columns:
         gb = gray_box_input.copy()
@@ -140,9 +142,9 @@ def build_diagnostics(
             "group_name",
             "group",
             "model",
-            "kge",
-            "kge_val",
-            "rmse",
+            "kge_ab_cal",
+            "kge_ab_sel",
+            "rmse_cal",
             "ups_id",
             "rf_id",
             "rain_lag_days",
@@ -165,7 +167,7 @@ def build_diagnostics(
     rest = [c for c in df_low.columns if c not in front]
     df_low = df_low[front + rest]
 
-    return df_low.sort_values(["diagnostic_flags", "kge_val"], ascending=[False, True])
+    return df_low.sort_values(["diagnostic_flags", "kge_ab_sel"], ascending=[False, True])
 
 
 def main() -> int:
@@ -191,7 +193,7 @@ def main() -> int:
         "--kge-threshold",
         type=float,
         default=0.5,
-        help="Stations with kge_val < threshold are included in the report",
+        help="Stations with kge_ab_sel < threshold are included in the report",
     )
     parser.add_argument(
         "--eps",
@@ -237,9 +239,9 @@ def main() -> int:
     report.to_csv(out_path, index=False)
 
     print(f"Wrote diagnostics report: {out_path}")
-    print(f"Stations in report (kge_val < {args.kge_threshold}): {len(report)}")
+    print(f"Stations in report (kge_ab_sel < {args.kge_threshold}): {len(report)}")
     if len(report) > 0:
-        show_cols = [c for c in ["st_id", "group_name", "model", "kge_val", "diagnostic_flags", "recommendation"] if c in report.columns]
+        show_cols = [c for c in ["st_id", "group_name", "model", "kge_ab_sel", "diagnostic_flags", "recommendation"] if c in report.columns]
         print(report[show_cols].head(20).to_string(index=False))
 
     return 0

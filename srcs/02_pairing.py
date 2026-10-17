@@ -1126,8 +1126,33 @@ def animate_upstream_links(
 
 
 def main():
+    import argparse
+    from gw_shell import CAL_END
+
+    parser = argparse.ArgumentParser(description="Upstream/rainfall pairing and coastal classification.")
+    parser.add_argument("--data-end", default=CAL_END,
+                        help="Last date (inclusive) of the records used for pairing, lags and "
+                             "classification. Defaults to the calibration end date so that no "
+                             "later data influences these structural choices.")
+    parser.add_argument("--output", default=os.path.join(_BASE_DIR, "data", "gray_box_input_cal.csv"),
+                        help="Working pairing table to write.")
+    parser.add_argument("--active-from", default=os.path.join(_BASE_DIR, "data", "gray_box_input.csv"),
+                        help="Existing pairing table whose 'active' flags are carried over "
+                             "(stations not found there are written inactive).")
+    args = parser.parse_args()
+
     df_gw_station, df_gw_data = prepare_groundwater_data()
     df_rain_station, df_rf_data = load_rainfall_data()
+
+    # Structural choices see only records up to data_end. The full series are
+    # still written to data/gw_timeseries.csv by prepare_groundwater_data.
+    data_end = pd.Timestamp(args.data_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    if df_gw_data is not None:
+        df_gw_data = df_gw_data.loc[df_gw_data.index <= data_end]
+    if df_rf_data is not None:
+        df_rf_data = df_rf_data.loc[df_rf_data.index <= data_end]
+    print(f"Pairing and classification use records up to {args.data_end}")
+
     df_input, df_gw_daily, df_rf_daily = groundwater_upstream_pairing(df_gw_station, df_gw_data, df_rain_station, df_rf_data)
 
     # Step 3: groundwater and rainfall pairing
@@ -1169,11 +1194,16 @@ def main():
     else:
         df_input = df_input.sort_values(by=['correlation'], ascending=True)
 
-    # add a column active == 0 for all rows in df_input as last column
+    # Carry 'active' flags over from an existing table (as the last column).
     df_input['active'] = 0
+    if args.active_from and os.path.exists(args.active_from):
+        prev = pd.read_csv(args.active_from)
+        active_ids = set(prev.loc[pd.to_numeric(prev['active'], errors='coerce') == 1, 'st_id'].astype(str))
+        df_input['active'] = df_input['st_id'].astype(str).isin(active_ids).astype(int)
+        print(f"Carried over {int(df_input['active'].sum())} active flag(s) from {args.active_from}")
 
-    raw_path = os.path.join(_BASE_DIR, 'data', 'gray_box_input_raw.csv')
-    working_path = os.path.join(_BASE_DIR, 'data', 'gray_box_input.csv')
+    working_path = args.output
+    raw_path = os.path.splitext(working_path)[0] + "_raw.csv"
     df_input.to_csv(raw_path, index=False, encoding='utf-8')
     df_input.to_csv(working_path, index=False, encoding='utf-8')
     print(f"Raw pairings saved to {raw_path}")

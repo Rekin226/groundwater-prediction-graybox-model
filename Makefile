@@ -2,6 +2,7 @@ PYTHON := poetry run python
 RUN_ID ?= initial
 STATION ?=
 MODELS ?= base,filtered,base_tz,filtered_tz
+INPUT ?= data/gray_box_input.csv
 
 .PHONY: all run run-optimized run-optimized-low-r2 run-optimized-all \
         run-station run-tz run-classic compare \
@@ -74,16 +75,13 @@ compare:
 	import pandas as pd, numpy as np; \
 	f = 'workspace/results/$(RUN_ID)/gw_fit_results.csv'; \
 	df = pd.read_csv(f); \
-	ill = df[df.get('kge_ill_conditioned', False) == True] if 'kge_ill_conditioned' in df.columns else df.iloc[0:0]; \
-	good_df = df[~df.index.isin(ill.index)] if len(ill) else df; \
 	print(f'Results from {f}'); \
-	print(f'Stations: {len(df)}  (excluded from aggregates: {len(ill)} ill-conditioned: {list(ill.st_id) if len(ill) else []})'); \
+	print(f'Stations: {len(df)}'); \
 	print(f'Models used: {df.model.value_counts().to_dict()}'); \
-	print(f'Median val KGE: {good_df.kge_val.median():.3f}'); \
-	print(f'Positive val KGE: {(good_df.kge_val > 0).sum()}/{len(good_df)}'); \
-	print(f'Good (KGE>=0.7): {(good_df.kge_val >= 0.7).sum()}'); \
-	print(f'Medium (0.5-0.7): {((good_df.kge_val >= 0.5) & (good_df.kge_val < 0.7)).sum()}'); \
-	print(f'Low (<0.5): {(good_df.kge_val < 0.5).sum()}'); \
+	print(f'Selection basis: {df.selection_basis.value_counts().to_dict()}'); \
+	[print(f'{p:>4}: median KGE_ab {df[\"kge_ab_\"+p].median():.3f}  median NSE {df[\"nse_\"+p].median():.3f}  mean RMSE {df[\"rmse_\"+p].mean():.2f} m') for p in ('cal', 'sel', 'test')]; \
+	k = df.kge_ab_test; \
+	print(f'Test tiers (KGE_ab): good {(k >= 0.7).sum()}, medium {((k >= 0.5) & (k < 0.7)).sum()}, low {(k < 0.5).sum()}'); \
 	tz = df[df.model.str.contains('_tz', na=False)]; \
 	cz = df[~df.model.str.contains('_tz', na=False)]; \
 	print(f'Selected z(t): {len(tz)}, Selected constant-z: {len(cz)}'); \
@@ -117,7 +115,7 @@ step2:
 	$(PYTHON) srcs/02_pairing.py
 
 step3:
-	$(PYTHON) srcs/03_run_model.py --run-id $(RUN_ID) --models $(MODELS) $(if $(STATION),--station $(STATION),)
+	$(PYTHON) srcs/03_run_model.py --input $(INPUT) --run-id $(RUN_ID) --models $(MODELS) $(if $(STATION),--station $(STATION),)
 
 step4:
 	$(PYTHON) srcs/04_diag_pairing_search.py --run-id $(RUN_ID)
@@ -170,7 +168,7 @@ activate-low-r2:
 import pandas as pd; \
 kge_threshold = 0.5; \
 res = pd.read_csv('workspace/results/initial/gw_fit_results.csv'); \
-low = set(res.loc[res['kge_val'] < kge_threshold, 'st_id'].astype(str)); \
+low = set(res.loc[res['kge_ab_sel'] < kge_threshold, 'st_id'].astype(str)); \
 summary = pd.read_csv('workspace/diagnostics/pairing_search_summary.csv')[['st_id','best_rf','best_ups','best_rain_lag_days']].rename(columns={'best_rf':'rf_id','best_ups':'ups_id','best_rain_lag_days':'lag_days'}); \
 summary['st_id'] = summary['st_id'].astype(str); \
 summary = summary[summary['st_id'].isin(low)]; \
