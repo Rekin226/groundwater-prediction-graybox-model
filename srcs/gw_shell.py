@@ -730,21 +730,19 @@ def run_global_optimization(
 # Per-station calibration
 ###############################################################################
 
-def _fit_model(
+def setup_fit(
     df_merge: pd.DataFrame,
     group_name: str,
     rain_lag_days: int,
     up_lag_days: int,
     no_upstream: bool,
     model_name: str,
-    n_starts: int = 15,
-    seed: int = 42,
     fixed: Optional[dict] = None,
-):
-    """Fit one variant on the calibration period and score it on all periods.
+) -> Optional[dict]:
+    """Inputs, period split, initial guess and bounds for one variant (no fitting).
 
-    fixed maps parameter names to values held constant during the fit (used for
-    profile likelihoods and reduced benchmark models).
+    Returns None when there are too few calibration records. fixed maps
+    parameter names to values held constant (bounds collapsed onto the value).
     """
     t, rainfall, amp, amt, h_up, h_obs, time_index, doy = fit_preprocess(
         df_merge,
@@ -884,6 +882,44 @@ def _fit_model(
         amt=amt_cal if is_coastal else None,
         h_up=h_up_cal, h0=h0, is_coastal=is_coastal, doy=doy_cal,
     )
+
+    return {
+        "model_func": model_func, "param_names": param_names,
+        "lower": lower, "upper": upper, "base_p0": base_p0,
+        "t": t, "rainfall": rainfall, "amp": amp, "amt": amt, "h_up": h_up,
+        "h_obs": h_obs, "time_index": time_index, "doy": doy,
+        "n_cal": n_cal, "n_sel_end": n_sel_end, "h0": h0, "is_coastal": is_coastal,
+        "t_cal": t_cal, "h_obs_cal": h_obs_cal, "model_kwargs": model_kwargs,
+    }
+
+
+def _fit_model(
+    df_merge: pd.DataFrame,
+    group_name: str,
+    rain_lag_days: int,
+    up_lag_days: int,
+    no_upstream: bool,
+    model_name: str,
+    n_starts: int = 15,
+    seed: int = 42,
+    fixed: Optional[dict] = None,
+):
+    """Fit one variant on the calibration period and score it on all periods.
+
+    fixed maps parameter names to values held constant during the fit (used for
+    profile likelihoods and reduced benchmark models).
+    """
+    setup = setup_fit(df_merge, group_name, rain_lag_days, up_lag_days,
+                      no_upstream, model_name, fixed=fixed)
+    if setup is None:
+        return None
+    model_func, param_names = setup["model_func"], setup["param_names"]
+    lower, upper, base_p0 = setup["lower"], setup["upper"], setup["base_p0"]
+    t, rainfall, amp, amt, h_up = setup["t"], setup["rainfall"], setup["amp"], setup["amt"], setup["h_up"]
+    h_obs, time_index, doy = setup["h_obs"], setup["time_index"], setup["doy"]
+    n_cal, n_sel_end, h0, is_coastal = setup["n_cal"], setup["n_sel_end"], setup["h0"], setup["is_coastal"]
+    t_cal, h_obs_cal, model_kwargs = setup["t_cal"], setup["h_obs_cal"], setup["model_kwargs"]
+
 
     best_popt, best_pcov, best_rmse = run_global_optimization(
         model_func=model_func,
