@@ -6,6 +6,7 @@ from typing import List, Tuple, Optional
 import pandas as pd
 import numpy as np
 from scipy.optimize import curve_fit, differential_evolution
+from scipy.stats import qmc
 from sklearn.metrics import r2_score, mean_squared_error
 import jfft
 import matplotlib.pyplot as plt
@@ -567,9 +568,10 @@ def run_global_optimization(
     n_params = len(lower_arr)
 
     # Seed the population: first row is the regression-based guess (if available),
-    # rest is Latin-hypercube sampled across bounds.
-    rng = np.random.default_rng(42)
-    pop = rng.uniform(lower_arr, upper_arr, size=(popsize * n_params, n_params))
+    # the rest is a Latin-hypercube sample scaled across the parameter bounds.
+    lhs = qmc.LatinHypercube(d=n_params, seed=42)
+    unit_pop = lhs.random(n=popsize * n_params)          # samples in [0, 1)
+    pop = qmc.scale(unit_pop, lower_arr, upper_arr)       # scaled to [lower, upper]
     if base_p0 is not None:
         pop[0] = np.clip(np.asarray(base_p0, dtype=float), lower_arr, upper_arr)
 
@@ -610,7 +612,7 @@ def run_global_optimization(
         )
         y_fit_p = model_func(xdata, *popt_p, **model_kwargs)
         rmse_p = float(np.sqrt(mean_squared_error(ydata, y_fit_p)))
-        if rmse_p <= best_rmse:
+        if rmse_p < best_rmse:               # accept polish only if strictly better
             best_popt = popt_p
             best_rmse = rmse_p
         best_pcov = pcov_p
@@ -693,14 +695,18 @@ def _fit_model(
             param_names = ["a", "z", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
             h_mean = float(np.mean(h_obs_cal))
             base_p0 = np.array([a0, z0, b0, c0, k0, 0.1, 0.1, h_mean, 0.2, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
-            lower = list(lower) + [lambda_min] + seas_lower
-            upper = list(upper) + [lambda_max] + seas_upper
+            # estimate_bounds_coastal returns [a, z, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up];
+            # lambda must go at index 8 (between h_sea and tau_rain) to match param_names.
+            lower = list(lower[:8]) + [lambda_min] + list(lower[8:]) + seas_lower
+            upper = list(upper[:8]) + [lambda_max] + list(upper[8:]) + seas_upper
         else:
             lower, upper = estimate_bounds_inland(h_obs_cal, rain_cal, amp_cal, h_up_cal, no_upstream=no_upstream)
             param_names = ["a", "z", "b", "c", "k_link", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
             base_p0 = np.array([a0, z0, b0, c0, k0, 0.2, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
-            lower = list(lower) + [lambda_min] + seas_lower
-            upper = list(upper) + [lambda_max] + seas_upper
+            # estimate_bounds_inland returns [a, z, b, c, k_link, tau_rain, tau_up];
+            # lambda must go at index 5 (between k_link and tau_rain) to match param_names.
+            lower = list(lower[:5]) + [lambda_min] + list(lower[5:]) + seas_lower
+            upper = list(upper[:5]) + [lambda_max] + list(upper[5:]) + seas_upper
     elif model_name == "base_tz":
         model_func = sub.gw_model_wrapper_tz
         z1_lo, z1_hi = -2.0, 2.0
@@ -727,17 +733,30 @@ def _fit_model(
             param_names = ["a", "z0", "z1", "b", "c", "k_link", "k_sgd", "gamma", "h_sea", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
             h_mean = float(np.mean(h_obs_cal))
             base_p0 = np.array([a0, z0, 0.0, b0, c0, k0, 0.1, 0.1, h_mean, 0.2, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
-            lower = [lower[0], lower[1], z1_lo] + list(lower[2:]) + [lambda_min] + seas_lower
-            upper = [upper[0], upper[1], z1_hi] + list(upper[2:]) + [lambda_max] + seas_upper
+            # estimate_bounds_coastal returns [a, z, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up];
+            # final param order is a, z0, z1, b, c, k_link, k_sgd, gamma, h_sea, lambda, tau_rain, tau_up, d_sin, d_cos.
+            lower = [lower[0], lower[1], z1_lo] + list(lower[2:8]) + [lambda_min] + list(lower[8:]) + seas_lower
+            upper = [upper[0], upper[1], z1_hi] + list(upper[2:8]) + [lambda_max] + list(upper[8:]) + seas_upper
         else:
             lower, upper = estimate_bounds_inland(h_obs_cal, rain_cal, amp_cal, h_up_cal, no_upstream=no_upstream)
             param_names = ["a", "z0", "z1", "b", "c", "k_link", "lambda", "tau_rain", "tau_up", "d_sin", "d_cos"]
             base_p0 = np.array([a0, z0, 0.0, b0, c0, k0, 0.2, tau_rain0, tau_up0, d_sin0, d_cos0], dtype=float)
-            lower = [lower[0], lower[1], z1_lo] + list(lower[2:]) + [lambda_min] + seas_lower
-            upper = [upper[0], upper[1], z1_hi] + list(upper[2:]) + [lambda_max] + seas_upper
+            # estimate_bounds_inland returns [a, z, b, c, k_link, tau_rain, tau_up];
+            # final param order is a, z0, z1, b, c, k_link, lambda, tau_rain, tau_up, d_sin, d_cos.
+            lower = [lower[0], lower[1], z1_lo] + list(lower[2:5]) + [lambda_min] + list(lower[5:]) + seas_lower
+            upper = [upper[0], upper[1], z1_hi] + list(upper[2:5]) + [lambda_max] + list(upper[5:]) + seas_upper
 
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
+
+    # Defensive check: bound arrays must align with simulator parameter order.
+    # A silent misalignment caused λ and τ_up to be fitted against the wrong
+    # bounds in earlier runs (filtered/filtered_tz variants).
+    assert len(lower) == len(param_names) == len(upper) == len(base_p0), (
+        f"Bound/param/p0 length mismatch for {model_name}: "
+        f"lower={len(lower)}, upper={len(upper)}, "
+        f"param_names={len(param_names)}, base_p0={len(base_p0)}"
+    )
 
     # --- For z(t) models, use absolute time indices ---
     use_absolute_t = model_name.endswith("_tz")
