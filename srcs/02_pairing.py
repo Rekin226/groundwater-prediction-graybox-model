@@ -43,6 +43,27 @@ MIN_UPS_HEAD_DIFF_M_RELAXED = 0.1  # relaxed threshold (m) — fallback for flat
 MAX_UPS_LAG_DAYS = 90           # max lag to search when correlating upstream → downstream
 MIN_UPS_OVERLAP_DAYS = 60       # minimum overlapping daily records required
 
+# Rainfall gauge screening: a run of consecutive zero-rain days longer than this
+# is treated as a reporting outage (dry-season runs in the study area stay
+# below ~90 days). Gauges with an outage anywhere in the record are not used.
+MAX_RF_ZERO_RUN_DAYS = 120
+
+
+def rainfall_outage_gauges(df_rf_daily, max_zero_run=MAX_RF_ZERO_RUN_DAYS):
+    """Gauges whose daily record contains a zero run longer than max_zero_run days.
+
+    Based on forcing availability only (no groundwater data), so it can use the
+    whole record without informing any choice from the response series.
+    """
+    bad = {}
+    for col in df_rf_daily.columns:
+        z = np.concatenate([[0], (df_rf_daily[col].fillna(0).to_numpy() == 0).astype(int), [0]])
+        edges = np.diff(z)
+        runs = np.where(edges == -1)[0] - np.where(edges == 1)[0]
+        if len(runs) and runs.max() > max_zero_run:
+            bad[col] = int(runs.max())
+    return bad
+
 
 def filter_stations_within_boundary(df_gw_station, shp_path=BOUNDARY_SHP):
     print("Filtering stations within boundary...")
@@ -1143,6 +1164,14 @@ def main():
 
     df_gw_station, df_gw_data = prepare_groundwater_data()
     df_rain_station, df_rf_data = load_rainfall_data()
+
+    if df_rf_data is not None:
+        outages = rainfall_outage_gauges(df_rf_data)
+        if outages:
+            print(f"Excluding rainfall gauges with reporting outages (longest zero run, days): {outages}")
+            df_rf_data = df_rf_data.drop(columns=list(outages))
+            if df_rain_station is not None:
+                df_rain_station = df_rain_station[~df_rain_station['rf_id'].astype(str).isin(outages)]
 
     # Structural choices see only records up to data_end. The full series are
     # still written to data/gw_timeseries.csv by prepare_groundwater_data.
