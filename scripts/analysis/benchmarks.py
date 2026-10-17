@@ -80,8 +80,9 @@ def main() -> int:
         preds["seasonal_naive"] = seasonal_naive(s["date"], obs)
         preds["ar1"] = ar1_forecast(clim, obs, train, test)
         if red is not None and st in red.index:
-            sr = load_series(red_dir, st)
-            preds["reduced"] = sr["sim_base"].to_numpy()
+            sr = load_series(red_dir, st).set_index("date")["sim_base"]
+            # Different lags drop different leading rows, so align on date.
+            preds["reduced"] = sr.reindex(s["date"]).to_numpy()
         for name, pred in preds.items():
             m_ok = test & np.isfinite(pred)
             m = gw_shell.period_metrics(obs[m_ok], pred[m_ok])

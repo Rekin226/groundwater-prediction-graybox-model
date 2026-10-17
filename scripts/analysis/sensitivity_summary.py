@@ -35,7 +35,8 @@ def main() -> int:
         common = s.index.intersection(ref.index)
         delta = s.loc[common, "kge_ab_test"] - ref.loc[common, "kge_ab_test"]
         merged = ref.copy()
-        cols = [c for c in s.columns if c in merged.columns]
+        cols = [c for c in s.columns if c in merged.columns
+                and (c.endswith(("_cal", "_sel", "_test")) or c in ("group_name", "model"))]
         merged.loc[common, cols] = s.loc[common, cols]
         row = {"run": name, "n": len(common),
                **{f"{m}_test_med": merged[f"{m}_test"].median() for m in ("kge_ab", "nse", "rmse")},
