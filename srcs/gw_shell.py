@@ -655,11 +655,13 @@ def run_global_optimization(
     popsize: int = 15,
     maxiter: int = 500,
     seed: int = 42,
+    seed_p0: bool = True,
     **model_kwargs,
 ):
     """Global optimisation with differential_evolution, then local polish with curve_fit for pcov.
 
-    seed drives both the Latin-hypercube initial population and the DE stream.
+    seed drives both the Latin-hypercube initial population and the DE stream;
+    seed_p0 places the regression-based guess in the initial population.
 
     Returns (best_popt, best_pcov, best_rmse).
     pcov is None if the polish step fails.
@@ -675,7 +677,7 @@ def run_global_optimization(
     lhs = qmc.LatinHypercube(d=n_params, seed=seed)
     unit_pop = lhs.random(n=popsize * n_params)          # samples in [0, 1)
     pop = qmc.scale(unit_pop, lower_arr, upper_arr)       # scaled to [lower, upper]
-    if base_p0 is not None:
+    if base_p0 is not None and seed_p0:
         pop[0] = np.clip(np.asarray(base_p0, dtype=float), lower_arr, upper_arr)
 
     def objective(params):
@@ -903,6 +905,8 @@ def _fit_model(
     n_starts: int = 15,
     seed: int = 42,
     fixed: Optional[dict] = None,
+    maxiter: int = 500,
+    seed_p0: bool = True,
 ):
     """Fit one variant on the calibration period and score it on all periods.
 
@@ -928,7 +932,9 @@ def _fit_model(
         bounds=(lower, upper),
         base_p0=base_p0,
         popsize=n_starts,
+        maxiter=maxiter,
         seed=seed,
+        seed_p0=seed_p0,
         **model_kwargs,
     )
 
