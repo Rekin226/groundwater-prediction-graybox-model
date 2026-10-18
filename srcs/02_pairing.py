@@ -35,6 +35,7 @@ FILTER_ORDER = 5
 M2_TARGET_CPD = 1.9323
 M2_TOL_CPD = 0.05
 M2_MIN_REL_AMP = 0.1
+M2_MIN_SNR = 3.0              # M2 amplitude / median background amplitude (1.6-2.4 cpd)
 COASTAL_MAX_DIST_M = 5000.0
 
 # Upstream pairing parameters (Delaunay + head-gradient + lag-correlation)
@@ -243,6 +244,30 @@ def find_m2_peak(df_top_freqs: pd.DataFrame):
     idx = subset["Amplitude"].idxmax()
     row = subset.loc[idx]
     return float(row["Frequency"]), float(row["Amplitude"])
+
+
+def m2_spectral_stats(signal: np.ndarray):
+    """M2 frequency, amplitude, ratio to the largest spectral amplitude, and SNR.
+
+    Uses the full amplitude spectrum of the high-pass-filtered hourly record.
+    The ratio is taken against the largest amplitude above the filter cutoff;
+    the SNR against the median amplitude in 1.6-2.4 cpd outside the M2 and S2
+    windows. Unlike a top-N-bins test, neither depends on how many bins the
+    diurnal peak occupies, which grows with record length.
+    """
+    n = len(signal)
+    amp = 2.0 / n * np.abs(fft(signal)[: n // 2])
+    f = fftfreq(n, 1.0)[: n // 2] * FS_CPD
+    m2_win = np.abs(f - M2_TARGET_CPD) <= M2_TOL_CPD
+    s2_win = np.abs(f - 2.0) <= M2_TOL_CPD
+    bg = (f >= 1.6) & (f <= 2.4) & ~m2_win & ~s2_win
+    if not m2_win.any() or not bg.any():
+        return np.nan, np.nan, np.nan, np.nan
+    i = np.flatnonzero(m2_win)[np.argmax(amp[m2_win])]
+    m2_amp = float(amp[i])
+    rel = m2_amp / float(amp[f > CUTOFF_CPD].max())
+    snr = m2_amp / float(np.median(amp[bg]))
+    return float(f[i]), m2_amp, rel, snr
 
 
 def build_coastline_geometry(data_dir: str):
@@ -490,13 +515,8 @@ def classify_coastal_inland(df_gw_station, df_gw_data):
         dom_freq = float(df_top.loc[idx_max, 'Frequency'])
         dom_amp = float(df_top.loc[idx_max, 'Amplitude'])
 
-        m2_freq, m2_amp = find_m2_peak(df_top)
-        if m2_amp is None:
-            is_m2_like = False
-        else:
-            max_amp = float(df_top['Amplitude'].max())
-            rel_amp = m2_amp / max_amp if max_amp > 0 else 0.0
-            is_m2_like = rel_amp >= M2_MIN_REL_AMP
+        m2_freq, m2_amp, m2_rel, m2_snr = m2_spectral_stats(filtered)
+        is_m2_like = bool(np.isfinite(m2_rel) and m2_rel >= M2_MIN_REL_AMP and m2_snr >= M2_MIN_SNR)
 
         freq_records.append({
             'Station': station,
@@ -505,6 +525,8 @@ def classify_coastal_inland(df_gw_station, df_gw_data):
             'dom_amp': dom_amp,
             'm2_freq_cpd': m2_freq,
             'm2_amp': m2_amp,
+            'm2_rel': m2_rel,
+            'm2_snr': m2_snr,
             'is_m2_like': bool(is_m2_like),
         })
 
