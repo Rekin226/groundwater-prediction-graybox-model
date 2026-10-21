@@ -1,0 +1,348 @@
+"""Per-station fit + plotting logic, factored out of 05_run_subsidence.py.
+
+Why this exists:
+- Python module names cannot begin with a digit, so the orchestrator script
+  05_run_subsidence.py is unimportable for testing. This sibling module holds
+  the testable per-station logic.
+- fit_station is referenced via `sub_shell.fit_station(...)` (module attribute,
+  late-bound) so `unittest.mock.patch.object(sub_shell, 'fit_station', ...)`
+  intercepts the call cleanly.
+"""
+from __future__ import annotations
+import sys
+import urllib.parse
+from pathlib import Path
+import numpy as np
+import pandas as pd
+
+# Module-level imports of subsidence sub-modules (NOT `from … import name`),
+# so tests can patch attributes on the module objects.
+from subsidence import sub_shell
+from subsidence.sub_gap_fill import gpr_fill
+
+CAL_START = pd.Timestamp("2020-01-01")
+CAL_END   = pd.Timestamp("2022-12-31")
+VAL_START = pd.Timestamp("2024-01-01")
+VAL_END   = pd.Timestamp("2025-03-31")
+DEFAULT_BOUNDS = {
+    "Sk_e": (1e-6, 1e-2), "Sk_v": (1e-6, 1e-1),
+    "h_ref": (-50.0, 50.0),    # widened; per-station tightened from h range
+    # v_tect bound is dataset-specific (see V_TECT_BOUNDS_BY_DATASET).
+    # Default is the wider GNSS bound; MLCW overrides to a tighter bound.
+    "v_tect": (-0.015, 0.015),
+    "v0": (-0.005, 0.005), "v1": (-0.002, 0.002),
+    "tau": (7.0, 1500.0),
+}
+# v_tect bound varies by dataset.  GNSS (daily, dense): ±0.015 m/yr — a lumped
+# regional-drift parameter that captures non-poroelastic long-term sinking
+# (mantle/isostatic creep, sub-grid storage, frame drift); cumulative-loss
+# under-prediction in v4 forced this widening.  MLCW (monthly, sparse): ±0.005
+# m/yr — tight — because the looser GNSS bound lets v_tect absorb the cal
+# trend on sparse data, leaving Sk_v unconstrained and producing val blowouts
+# (僑義國小 KGE -1.4 → -22 in v8).  Reported transparently as dataset-specific
+# regularisation; the choice is empirical, not arbitrary.
+V_TECT_BOUNDS_BY_DATASET = {
+    "ls-wra-gnss-obs": (-0.015, 0.015),
+    "ls-wra-mlcw-obs": (-0.001, 0.001),
+}
+MIN_FORM3_OBS = 36
+# DBM (Deep Borehole Marker) measures bedrock motion, not aquifer compaction.
+# Riley/IBS poroelastic physics is a model misspecification for these stations,
+# evidenced by val α ≈ 0.001, β ≈ 0.001 (model collapses to flat-zero) for all
+# 6 DBM stations in the initial run.  Excluded from calibration.
+EXCLUDED_DATASETS = ("ls-wra-dbm-obs",)
+# Station-level data-quality exclusions.
+# LNJS: station reset / antenna swap event 2024-08-31 → 2024-11-04 introduces
+# discrete metres-scale jumps (top day-on-day Δ = 46.8 m) and a permanent
+# +5.6 m datum shift within the val window.  Cal period (2020-2022) is clean
+# but val is unrecoverable; rate = -438 cm/yr is a metadata artefact, not
+# subsidence.
+EXCLUDED_STATIONS = ("LNJS",)
+
+
+MLCW_MIN_CAL_OBS = 12   # ~1 year of monthly samples
+MLCW_MIN_VAL_OBS = 3
+
+
+def _build_zeta(raw, sub_dataset: str, sub_id: str, run_id: str):
+    """Build the cumulative ζ observable from a raw observation series.
+
+    Returns a ``(zeta, mlcw_deep_retired)`` tuple.  ``mlcw_deep_retired`` is
+    True only for MLCW stations whose deepest cal-viable ring lacks adequate
+    validation coverage (deep extensometer retired before VAL_START); such
+    stations are fit cal-only and their val metrics are reported as N/A.  It
+    is always False for GNSS/DBM and for MLCW stations whose deepest ring
+    spans the val window.
+
+    For MLCW also writes per-layer compaction CSV (spec §9 requirement) and
+    selects the deepest ring with adequate calibration coverage — the
+    total-column compaction observable whose sign matches head-driven
+    Riley/IBS physics.  See the inline note for why val coverage is no longer
+    a selection gate.
+    """
+    if sub_dataset == "ls-wra-mlcw-obs":
+        df = raw if isinstance(raw, pd.DataFrame) else raw.to_frame()
+        cols = [c for c in df.columns if c.startswith("NO")]
+        cols.sort(key=lambda c: int(c[2:]))
+        if not cols:
+            return pd.Series(dtype=float), False
+        # Per-layer cumulative compaction relative to t_0 (each ring's value at first valid date)
+        per_layer = pd.DataFrame(index=df.index)
+        for c in cols:
+            s = df[c].dropna()
+            if not s.empty:
+                per_layer[c] = s.iloc[0] - df[c]
+        # Deepest-cal-viable ring selection: walk shallow-ward from the bottom
+        # and choose the deepest ring with adequate CALIBRATION coverage.  The
+        # deepest ring is the total-column compaction observable and is the only
+        # ring whose sign is consistent with head-driven Riley/IBS compaction.
+        #
+        # We deliberately do NOT gate on validation coverage here.  On four
+        # stations (僑義國小, 北辰國小, 宏崙國小, 拯民國小) the deepest extensometer
+        # section was retired at 2021-12 (before VAL_START).  A prior version
+        # fell through to a shallower viable ring to obtain val data, but that
+        # ring measures a different, opposite-signed interval (shallow elastic
+        # rebound) — producing a spurious β sign-flip (KGE_val as low as −1.46)
+        # while the model still tracks the deep-column shape (r 0.71–0.83).  We
+        # now keep the correctly-signed deepest ring and flag the station as
+        # mlcw_deep_retired so its (invalid) val window is reported as N/A
+        # rather than scored as a model failure.
+        chosen_col = None
+        for c in reversed(cols):
+            s = df[c].dropna()
+            n_cal = int(((s.index >= CAL_START) & (s.index <= CAL_END)).sum())
+            if n_cal >= MLCW_MIN_CAL_OBS:
+                chosen_col = c
+                break
+        if chosen_col is None:
+            return pd.Series(dtype=float), False
+        # Deep-retired = chosen (deepest cal-viable) ring lacks adequate val
+        # coverage.  Such stations are fit cal-only and excluded from val
+        # aggregates downstream.
+        s = df[chosen_col].dropna()
+        n_val = int(((s.index >= VAL_START) & (s.index <= VAL_END)).sum())
+        mlcw_deep_retired = n_val < MLCW_MIN_VAL_OBS
+        # Write per-layer CSV only after a viable ring is confirmed; otherwise
+        # a skipped station leaves a stale layer file behind.
+        per_layer_path = Path(f"workspace/results_sub/{run_id}/per_station/{sub_id}_mlcw_layer.csv")
+        per_layer_path.parent.mkdir(parents=True, exist_ok=True)
+        per_layer.to_csv(per_layer_path)
+        return s.iloc[0] - df[chosen_col], mlcw_deep_retired
+    # GNSS / DBM single-value series
+    s = raw["value"] if (isinstance(raw, pd.DataFrame) and "value" in raw.columns) else raw
+    s = s.dropna()
+    if s.empty:
+        return pd.Series(dtype=float), False
+    return s.iloc[0] - s, False
+
+
+def _per_station_bounds(h: np.ndarray, sub_dataset: str = "") -> dict:
+    out = dict(DEFAULT_BOUNDS)
+    h_finite = h[np.isfinite(h)]
+    if h_finite.size > 0:
+        out["h_ref"] = (float(np.min(h_finite)) - 5.0, float(np.max(h_finite)) + 5.0)
+    if sub_dataset in V_TECT_BOUNDS_BY_DATASET:
+        out["v_tect"] = V_TECT_BOUNDS_BY_DATASET[sub_dataset]
+    return out
+
+
+def _process(sub_id: str, sub_dataset: str, run_id: str) -> str:
+    out_dir = Path(f"workspace/results_sub/{run_id}/per_station")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    h_path = Path(f"subsidence/data/h_drivers/{sub_id}.parquet")
+    if not h_path.exists():
+        return f"  {sub_id}: no h_driver; skip"
+    h_df = pd.read_parquet(h_path)
+    # URL-encode sub_id for cache file lookup (MLCW station names are Chinese)
+    sid_encoded = urllib.parse.quote(str(sub_id), safe="")
+    obs_path = Path(f"data/ls_cache/clean/{sub_dataset}__{sid_encoded}.parquet")
+    if not obs_path.exists():
+        return f"  {sub_id}: no cleaned observations; run 03b_clean_ls.py first"
+    raw = pd.read_parquet(obs_path)
+    # Daily resample for DBM (hourly raw)
+    if sub_dataset == "ls-wra-dbm-obs":
+        raw = raw.resample("1D").mean()
+    zeta_full, mlcw_deep_retired = _build_zeta(raw, sub_dataset, sub_id, run_id)
+    if zeta_full.empty:
+        return f"  {sub_id}: empty zeta; skip"
+    idx = h_df.index
+    zeta = zeta_full.reindex(idx)
+    h = h_df["h_driver"].values
+    # Re-anchor ζ_obs at the first cal-window observation so it lines up with
+    # the simulator's ζ[0]=0 anchoring at h_driver start (= cal_start).  When
+    # the obs cache extends pre-cal (MLCW now covers 2010+ after the
+    # 2010-start fetch), raw ζ_obs is anchored at 2010 — feeding that to the
+    # cal residual against a sim anchored at 2020 produces a 10+ cm offset
+    # the optimizer can only absorb pathologically.  Subtracting the first
+    # finite at-or-after CAL_START cancels that offset.
+    cal_obs = zeta.loc[(zeta.index >= CAL_START) & (zeta.index <= CAL_END)].dropna()
+    if cal_obs.empty:
+        return f"  {sub_id}: zero finite cal obs; skip"
+    zeta = zeta - float(cal_obs.iloc[0])
+
+    t_years = (idx - idx[0]).days.values / 365.25
+    cal_mask = (idx >= CAL_START) & (idx <= CAL_END)
+    val_mask = (idx >= VAL_START) & (idx <= VAL_END)
+    cal_idx = np.where(cal_mask)[0]
+    val_idx = np.where(val_mask)[0]
+    if cal_idx.size == 0 or val_idx.size == 0:
+        return f"  {sub_id}: cal/val period has no data; skip"
+    n_obs_cal = int((~np.isnan(zeta.values[cal_idx])).sum())
+    n_obs_val = int((~np.isnan(zeta.values[val_idx])).sum())
+    if n_obs_val == 0 and not mlcw_deep_retired:
+        return f"  {sub_id}: zero finite val obs; skip"
+    # mlcw_deep_retired stations are intentionally fit cal-only: their deepest
+    # (correctly-signed, total-column) ring was retired before the val window,
+    # so val metrics will be NaN and are reported as N/A rather than scored.
+    form3_ok = sub_dataset != "ls-wra-mlcw-obs" or n_obs_cal >= MIN_FORM3_OBS
+
+    bounds = _per_station_bounds(h, sub_dataset)
+    try:
+        fit = sub_shell.fit_station(h=h, zeta_obs=zeta.values, t_years=t_years,
+                                    cal_idx=cal_idx, val_idx=val_idx,
+                                    bounds=bounds, form3_eligible=form3_ok)
+    except Exception as e:
+        return f"  {sub_id}: fit failed — {str(e)[:120]}"
+
+    # Hoist gpr_fill BEFORE the CSV write so its outputs can be persisted
+    # alongside the variant CSV (Task 1.9).  gpr_fill is plot-only and must
+    # NEVER fail the fit pipeline — defensive fallback matches commit 6e62093.
+    try:
+        zeta_filled, zeta_sigma, imputed_mask, render_mask = gpr_fill(idx, zeta.values)
+    except Exception as _gpr_err:
+        # GPR is plot-only and must NEVER fail the fit pipeline.
+        # See test_pipeline_byte_identity.py — preserves commit 6e62093.
+        zeta_filled = zeta.values.copy()
+        zeta_sigma = np.full_like(zeta.values, np.nan)
+        imputed_mask = np.isnan(zeta.values)
+        render_mask = np.zeros_like(zeta.values, dtype=bool)
+        print(f"  [gpr warning] {sub_id}: {_gpr_err}")
+
+    # Write per-station CSV
+    rows = []
+    for v, f in fit["all_variants"].items():
+        row = {"sub_id": sub_id, "sub_dataset": sub_dataset, "variant": v,
+               "is_best": v == fit["best_variant"],
+               "tau_underidentified": (v.endswith("_tau") and not form3_ok),
+               "mlcw_deep_retired": bool(mlcw_deep_retired),
+               "rate_loss_active": bool(f.get("rate_loss_active", True)),
+               **f["params"],
+               **{k: f[k] for k in f if k.startswith(("kge_", "rmse_", "r2_", "bias_"))}}
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(out_dir / f"{sub_id}.csv", index=False)
+
+    inactive_variants = [v for v, f in fit["all_variants"].items()
+                         if not f.get("rate_loss_active", True)]
+    if inactive_variants:
+        print(f"  [rate-loss inactive] {sub_id}: {','.join(inactive_variants)} "
+              "(cumulative-only fallback — sparse data)")
+
+    # GPR time-series CSV (consumed by diag_gpr_pathology + diag_audit_classifiers).
+    # Include sim_best so the audit classifier can compute kge_detrended without
+    # re-simulating.
+    sim_best = fit["all_variants"][fit["best_variant"]]["sim_full"]
+    gpr_df = pd.DataFrame({
+        "date": idx,
+        "zeta_obs": zeta.values,
+        "zeta_gpr_mean": zeta_filled,
+        "zeta_gpr_sigma": zeta_sigma,
+        "imputed_mask": imputed_mask,
+        "render_mask": render_mask,
+        "sim_best": sim_best,
+    })
+    gpr_df.to_csv(out_dir / f"{sub_id}_gpr.csv", index=False)
+
+    # ------------------------------------------------------------------
+    # Plots (rklib-style, TIFF 300 DPI)
+    # ------------------------------------------------------------------
+    # zeta_filled / zeta_sigma / imputed_mask / render_mask come from the
+    # hoisted gpr_fill call above (Task 1.9).  They are already in scope;
+    # plot helpers consume them directly.
+    try:
+        from subsidence.sub_plotting import (
+            plot_per_variant,
+            plot_comparison,
+            plot_full_subplots,
+            plot_mlcw_layer_profile,
+        )
+        fig_dir = Path(f"workspace/results_sub/{run_id}/figures")
+
+        # Per-variant figures
+        for v, f in fit["all_variants"].items():
+            plot_per_variant(
+                sub_id=sub_id,
+                variant=v,
+                t=idx,
+                zeta_obs=zeta.values,
+                sim=f["sim_full"],
+                cal_idx=cal_idx,
+                val_idx=val_idx,
+                metrics={k: f[k] for k in f
+                         if k.startswith(("kge_", "rmse_", "r2_", "bias_"))},
+                out_path=fig_dir / v / f"sub_fit_{sub_id}.tiff",
+                zeta_filled=zeta_filled,
+                zeta_sigma=zeta_sigma,
+                imputed_mask=imputed_mask,
+                render_mask=render_mask,
+                sub_dataset=sub_dataset,
+            )
+
+        # Comparison overlay + metrics table
+        plot_comparison(
+            sub_id=sub_id,
+            t=idx,
+            zeta_obs=zeta.values,
+            fits=fit["all_variants"],
+            cal_idx=cal_idx,
+            val_idx=val_idx,
+            out_path=fig_dir / "comparison" / f"sub_compare_{sub_id}.tiff",
+            zeta_filled=zeta_filled,
+            zeta_sigma=zeta_sigma,
+            imputed_mask=imputed_mask,
+            render_mask=render_mask,
+            sub_dataset=sub_dataset,
+        )
+
+        # Best-variant overview (ζ + h_driver + rainfall)
+        # sim_best already set above for the GPR CSV (Task 1.9).
+        _best_v = fit["best_variant"]
+        _best_f = fit["all_variants"][_best_v]
+        _best_metrics = {k: _best_f[k] for k in _best_f
+                         if k.startswith(("kge_", "rmse_", "r2_", "bias_"))}
+        plot_full_subplots(
+            sub_id=sub_id,
+            t=idx,
+            zeta_obs=zeta.values,
+            sim_best=sim_best,
+            h_driver=h,
+            driver_source=h_df["driver_source"].values
+            if "driver_source" in h_df.columns else None,
+            rainfall=None,  # rainfall integration deferred to Phase 9
+            out_path=fig_dir / "full_subplots" / f"sub_fit_{sub_id}.tiff",
+            cal_idx=cal_idx,
+            val_idx=val_idx,
+            zeta_filled=zeta_filled,
+            zeta_sigma=zeta_sigma,
+            imputed_mask=imputed_mask,
+            render_mask=render_mask,
+            metrics=_best_metrics,
+            best_variant=_best_v,
+            sub_dataset=sub_dataset,
+        )
+
+        # MLCW per-layer compaction profile (only for MLCW dataset)
+        if sub_dataset == "ls-wra-mlcw-obs":
+            layer_csv = out_dir / f"{sub_id}_mlcw_layer.csv"
+            if layer_csv.exists():
+                plot_mlcw_layer_profile(
+                    sub_id=sub_id,
+                    layer_csv_path=layer_csv,
+                    out_path=fig_dir / "mlcw_layer_profiles" / f"{sub_id}.tiff",
+                )
+    except Exception as _plot_err:
+        import traceback
+        print(f"  [plot warning] {sub_id}: {_plot_err}")
+        traceback.print_exc()
+
+    best_kge = fit["all_variants"][fit["best_variant"]]["kge_val"]
+    return f"  {sub_id}: best={fit['best_variant']}  kge_val={best_kge:.3f}"

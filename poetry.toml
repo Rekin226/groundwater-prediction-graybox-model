@@ -1,0 +1,3 @@
+[virtualenvs]
+prompt = "stv2"
+in-project = true
