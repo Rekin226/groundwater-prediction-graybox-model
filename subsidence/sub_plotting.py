@@ -30,6 +30,33 @@ VARIANT_COLOR = {
     "M4_tau": "tab:orange",
 }
 
+# Network-level (summary-figure) palette.  Mirrors the cal/val shading hues
+# used in the per-station plots for visual consistency across figures.
+NETWORK_COLOR = {
+    "ls-wra-gnss-obs": "#2166ac",   # GNSS (continuous, daily)
+    "ls-wra-mlcw-obs": "#d6604d",   # MLCW (multi-layer compaction wells)
+}
+NETWORK_LABEL = {
+    "ls-wra-gnss-obs": "GNSS",
+    "ls-wra-mlcw-obs": "MLCW",
+}
+
+# Curated exemplar stations for the Fig-4 skill-spectrum panel (good / typical /
+# poor by validation KGE).  Fixed rather than auto-selected so the paper figure
+# is stable and never surfaces a data-glitch station; override via plot_exemplars.
+DEFAULT_EXEMPLARS = [
+    ("YWJS", "Good"),      # KGE_val ≈ 0.66 — model tracks seasonal signal
+    ("JJES", "Typical"),   # KGE_val ≈ 0.18 — captures trend, mild under-forecast
+    ("MDES", "Poor"),      # KGE_val ≈ -0.36 — honest forecast divergence (not bad data)
+]
+
+# h(t) driver provenance colours (Fig-4 lower panels).
+DRIVER_SRC_COLOR = {
+    "model_fill":    "#d6604d",
+    "linear_interp": "#f4a000",
+    "taper":         "#4393c3",
+}
+
 METRIC_BOX = dict(
     boxstyle="round,pad=0.35",
     facecolor="white",
@@ -644,4 +671,273 @@ def plot_mlcw_layer_profile(sub_id: str, layer_csv_path: Path, out_path: Path):
     fig.colorbar(sm, ax=ax, label="Ring NO")
 
     fig.tight_layout()
+    _save(fig, out_path)
+
+
+# ---------------------------------------------------------------------------
+# Network-level summary figures (one per run, not per station)
+# ---------------------------------------------------------------------------
+
+def _network_legend_label(dataset: str, n: int) -> str:
+    return f"{NETWORK_LABEL.get(dataset, dataset)} (n={n})"
+
+
+def plot_obs_pred_total(totals: pd.DataFrame, out_path: Path, *, band_m: float = 0.05):
+    """Headline figure: observed vs predicted *total* cumulative subsidence.
+
+    One point per station, in metres, against a 1:1 line with a ±``band_m``
+    agreement envelope.  Coloured by monitoring network.  This is the physical-
+    magnitude result — readable without reference to KGE.
+
+    Parameters
+    ----------
+    totals : DataFrame with columns ``sub_id``, ``sub_dataset``,
+             ``obs_total_m``, ``pred_total_m``.
+    """
+    _setup()
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    hi = float(np.nanmax([totals["obs_total_m"].max(),
+                          totals["pred_total_m"].max()])) * 1.08
+    # ±band envelope around 1:1 (drawn first, behind points)
+    ax.fill_between([0, hi], [-band_m, hi - band_m], [band_m, hi + band_m],
+                    color="#bdbdbd", alpha=0.18, linewidth=0, zorder=0,
+                    label=f"±{int(band_m * 100)} cm")
+    ax.plot([0, hi], [0, hi], color="black", ls="--", lw=1.0, alpha=0.7,
+            zorder=1, label="1:1 (perfect)")
+
+    for ds, g in totals.groupby("sub_dataset"):
+        ax.scatter(g["obs_total_m"], g["pred_total_m"], s=55,
+                   c=NETWORK_COLOR.get(ds, "tab:gray"), edgecolor="k", lw=0.5,
+                   alpha=0.85, zorder=3, label=_network_legend_label(ds, len(g)))
+
+    ax.set_xlim(0, hi)
+    ax.set_ylim(0, hi)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel(r"Observed total subsidence $\zeta$ (m)", fontweight="bold")
+    ax.set_ylabel(r"Predicted total subsidence $\zeta$ (m)", fontweight="bold")
+    ax.legend(loc="upper left", fontsize=8, framealpha=0.95)
+    ax.grid(True, lw=0.3, alpha=0.4)
+    fig.tight_layout()
+    _save(fig, out_path)
+
+
+def plot_cal_val_skill(fit: pd.DataFrame, out_path: Path):
+    """Companion figure: per-station calibration vs validation KGE.
+
+    One point per station: x = KGE_cal, y = KGE_val, with the 1:1 line
+    (forecast as good as fit) and the KGE = 0 reference (mean predictor).
+    Stations with undefined validation skill (cal-only) are dropped and
+    reported in the title.
+
+    Parameters
+    ----------
+    fit : DataFrame with columns ``sub_dataset``, ``kge_cal``, ``kge_val``.
+    """
+    _setup()
+    n_total = len(fit)
+    d = fit.dropna(subset=["kge_cal", "kge_val"]).copy()
+    n_calonly = n_total - len(d)
+
+    lo = float(min(d["kge_cal"].min(), d["kge_val"].min(), 0.0)) - 0.1
+    lo = max(lo, -1.0)
+    hi = 1.0
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    ax.plot([lo, hi], [lo, hi], color="black", ls="--", lw=1.0, alpha=0.7,
+            zorder=1, label="1:1 (cal = val)")
+    ax.axhline(0.0, color="grey", ls=":", lw=1.0, zorder=1)
+    ax.text(lo + 0.02, 0.0, "KGE$_{val}$ = 0 (mean predictor)",
+            fontsize=7, color="grey", va="bottom")
+
+    for ds, g in d.groupby("sub_dataset"):
+        ax.scatter(g["kge_cal"], g["kge_val"], s=55,
+                   c=NETWORK_COLOR.get(ds, "tab:gray"), edgecolor="k", lw=0.5,
+                   alpha=0.85, zorder=3, label=_network_legend_label(ds, len(g)))
+
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("KGE — calibration", fontweight="bold")
+    ax.set_ylabel("KGE — validation (forecast)", fontweight="bold")
+    title = "Calibration vs validation skill"
+    if n_calonly:
+        title += f"  ({n_calonly} cal-only station{'s' if n_calonly != 1 else ''} omitted)"
+    ax.set_title(title, fontweight="bold", pad=6)
+    ax.legend(loc="lower right", fontsize=8, framealpha=0.95)
+    ax.grid(True, lw=0.3, alpha=0.4)
+    fig.tight_layout()
+    _save(fig, out_path)
+
+
+def plot_network_summary(results_dir: "Path | str", fig_dir: "Path | str | None" = None):
+    """Build both network-level summary figures from a run's output CSVs.
+
+    Reads ``sub_fit_results.csv`` (best variant per station; cal/val KGE +
+    network) and each ``per_station/<id>_gpr.csv`` (for observed / simulated
+    total subsidence).  Writes ``figures/summary/obs_pred_total.tiff`` and
+    ``figures/summary/cal_val_skill.tiff``.
+    """
+    results_dir = Path(results_dir)
+    fit = pd.read_csv(results_dir / "sub_fit_results.csv")
+    fig_dir = Path(fig_dir) if fig_dir is not None else results_dir / "figures"
+    out = fig_dir / "summary"
+
+    # Companion (A): cal vs val skill — straight from the best-fit table.
+    plot_cal_val_skill(fit, out / "cal_val_skill.tiff")
+
+    # Headline (B): observed vs predicted total subsidence (series end).
+    net = dict(zip(fit["sub_id"], fit["sub_dataset"]))
+    rows = []
+    for f in sorted((results_dir / "per_station").glob("*_gpr.csv")):
+        sid = f.stem[:-4]  # strip "_gpr"
+        d = pd.read_csv(f)
+        if "sim_best" not in d:
+            continue
+        obs = d["zeta_obs"].dropna()
+        sim = d["sim_best"].dropna()
+        if obs.empty or sim.empty:
+            continue
+        rows.append({
+            "sub_id": sid,
+            "sub_dataset": net.get(sid, "?"),
+            "obs_total_m": float(obs.iloc[-1]),
+            "pred_total_m": float(sim.iloc[-1]),
+        })
+    if rows:
+        plot_obs_pred_total(pd.DataFrame(rows), out / "obs_pred_total.tiff")
+
+    # Fig 4: curated exemplar fits (good / typical / poor).  Wrapped so a missing
+    # driver/station never breaks the summary scatters above.
+    try:
+        plot_exemplars(results_dir, out / "exemplars.tiff")
+    except Exception as e:
+        print(f"  [warn] exemplar figure skipped: {e}")
+
+
+def plot_exemplars(
+    results_dir: "Path | str",
+    out_path: Path,
+    *,
+    exemplars: "list[tuple[str, str]] | None" = None,
+    driver_dir: "Path | str" = "subsidence/data/h_drivers",
+):
+    """Fig 4: representative ζ fits across the skill spectrum (2×N grid).
+
+    Per column (one station): top = cumulative ζ (faint raw daily + 30-day mean
+    + model cal/forecast), bottom = h(t) driver shaded by provenance.  Stations
+    default to :data:`DEFAULT_EXEMPLARS`; any whose per-station CSV is missing is
+    skipped and the grid shrinks accordingly.
+    """
+    from matplotlib.gridspec import GridSpec
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    # cal/val windows — lazy import avoids a module-level cycle with sub_runner.
+    from subsidence.sub_runner import CAL_START, CAL_END, VAL_START, VAL_END
+
+    results_dir = Path(results_dir)
+    driver_dir = Path(driver_dir)
+    exemplars = exemplars if exemplars is not None else DEFAULT_EXEMPLARS
+
+    fit = pd.read_csv(results_dir / "sub_fit_results.csv").set_index("sub_id")
+
+    # Keep only exemplars that actually have per-station output.
+    found = [(sid, lbl) for sid, lbl in exemplars
+             if (results_dir / "per_station" / f"{sid}_gpr.csv").exists()]
+    if not found:
+        print("  [skip] exemplars: none of the requested stations have output")
+        return
+
+    _setup()
+    n = len(found)
+    fig = plt.figure(figsize=(5.0 * n, 7.2))
+    gs = GridSpec(2, n, height_ratios=[3, 1.7], hspace=0.12, wspace=0.18)
+
+    def _runs(mask, idx):
+        """Contiguous True-runs of mask → list of (start, end) index values."""
+        out, i, m = [], 0, len(mask)
+        while i < m:
+            if mask[i]:
+                j = i
+                while j + 1 < m and mask[j + 1]:
+                    j += 1
+                out.append((idx[i], idx[j]))
+                i = j + 1
+            else:
+                i += 1
+        return out
+
+    for c, (sid, tier) in enumerate(found):
+        g = pd.read_csv(results_dir / "per_station" / f"{sid}_gpr.csv",
+                        parse_dates=["date"]).set_index("date")
+        t = g.index
+        cal = (t >= CAL_START) & (t <= CAL_END)
+        val = (t >= VAL_START) & (t <= VAL_END)
+        buf = (t > CAL_END) & (t < VAL_START)
+
+        ax = fig.add_subplot(gs[0, c])
+        axd = fig.add_subplot(gs[1, c], sharex=ax)
+
+        # cal / val / buffer shading
+        ax.axvspan(CAL_START, CAL_END, color="#2166ac", alpha=0.06, zorder=0)
+        ax.axvspan(VAL_START, VAL_END, color="#d6604d", alpha=0.06, zorder=0)
+        ax.axvspan(CAL_END, VAL_START, color="#bdbdbd", alpha=0.13, zorder=0)
+
+        # observed: faint raw daily + 30-day rolling mean (display-only)
+        ax.plot(t, g["zeta_obs"], color="0.55", lw=0.5, alpha=0.45, zorder=1)
+        sm = g["zeta_obs"].rolling("30D", min_periods=5).mean()
+        ax.plot(t, sm, color="black", lw=1.4, zorder=3)
+
+        # model: cal solid, buffer dotted, forecast dashed
+        sim = g["sim_best"]
+        ax.plot(t[cal], sim[cal], color="#1a5fb4", lw=1.8, zorder=4)
+        ax.plot(t[buf], sim[buf], color="#1a5fb4", lw=1.3, ls=":", alpha=0.7, zorder=4)
+        ax.plot(t[val], sim[val], color="#1a5fb4", lw=1.8, ls="--", zorder=4)
+        ax.axvline(CAL_END, color="k", ls="--", lw=0.9, alpha=0.7)
+        ax.axvline(VAL_START, color="k", ls="--", lw=0.9, alpha=0.7)
+
+        kc = fit.loc[sid, "kge_cal"] if sid in fit.index else float("nan")
+        kv = fit.loc[sid, "kge_val"] if sid in fit.index else float("nan")
+        ax.text(0.03, 0.97, f"KGE$_{{cal}}$ = {kc:.2f}\nKGE$_{{val}}$ = {kv:.2f}",
+                transform=ax.transAxes, va="top", fontsize=8.5, bbox=METRIC_BOX)
+        ax.set_title(f"{tier} — {sid}", fontweight="bold", fontsize=12, pad=4)
+        if c == 0:
+            ax.set_ylabel(r"Cumulative $\zeta$ (m)", fontweight="bold")
+        ax.grid(True, lw=0.3, alpha=0.35)
+        ax.tick_params(labelbottom=False)
+        ax.set_xlim(CAL_START, VAL_END)
+
+        # driver panel: h(t) + provenance strips
+        drv_path = driver_dir / f"{sid}.parquet"
+        if drv_path.exists():
+            drv = pd.read_parquet(drv_path)
+            axd.plot(drv.index, drv["h_driver"], color="0.4", lw=0.7, zorder=2)
+            if "driver_source" in drv.columns:
+                src = drv["driver_source"].values
+                di = drv.index
+                for s, col in DRIVER_SRC_COLOR.items():
+                    for a, b in _runs(src == s, di):
+                        axd.axvspan(a, b, color=col, alpha=0.55, zorder=1)
+        if c == 0:
+            axd.set_ylabel(r"$h(t)$ (m)", fontweight="bold")
+        axd.grid(True, lw=0.3, alpha=0.35)
+        _fmt_xaxis(axd)
+        axd.set_xlabel("Year", fontweight="bold")
+
+    legend_handles = [
+        Line2D([0], [0], color="0.55", lw=1.0, alpha=0.6, label="Observed (raw daily)"),
+        Line2D([0], [0], color="black", lw=1.6, label="Observed (30-d mean)"),
+        Line2D([0], [0], color="#1a5fb4", lw=1.8, label="Model — calibration"),
+        Line2D([0], [0], color="#1a5fb4", lw=1.8, ls="--", label="Model — forecast"),
+        Patch(facecolor="#2166ac", alpha=0.18, label="Cal window"),
+        Patch(facecolor="#d6604d", alpha=0.18, label="Val window"),
+        Patch(facecolor="#bdbdbd", alpha=0.30, label="Buffer (excl.)"),
+        Patch(facecolor="#d6604d", alpha=0.55, label="h: model-fill"),
+        Patch(facecolor="#f4a000", alpha=0.55, label="h: interp"),
+        Patch(facecolor="#4393c3", alpha=0.55, label="h: taper"),
+    ]
+    fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=9,
+               framealpha=0.95, bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle("Representative subsidence fits across the skill spectrum",
+                 fontweight="bold", fontsize=13, y=0.98)
     _save(fig, out_path)

@@ -68,8 +68,10 @@ def fig4(v: pd.DataFrame) -> None:
     beta, ic, _, _, se = stats.linregress(np.log(x), np.log(y))
     rho, p_rho = stats.spearmanr(x, s)
 
-    fig, axes = fs.new_figure(width="double", height=3.2, ncols=2)
-    fig.subplots_adjust(wspace=0.30)
+    # height 3.2 clipped the x-axis label: it fell outside the canvas and
+    # bbox_inches="tight" sheared it mid-glyph. Give it room and pin the margins.
+    fig, axes = fs.new_figure(width="double", height=4.0, ncols=2)
+    fig.subplots_adjust(wspace=0.30, bottom=0.15, top=0.92, left=0.09, right=0.98)
     ax = axes[0]
     xx = np.logspace(np.log10(x.min() * 0.75), np.log10(x.max() * 1.35), 100)
     ax.plot(xx, np.exp(ic) * xx**beta, "-", color="0.25", lw=1.4, zorder=2,
@@ -85,7 +87,7 @@ def fig4(v: pd.DataFrame) -> None:
            ylabel="Seasonal displacement amplitude (cm)")
     _decade_ticks(ax, "x", [0.5, 1, 2, 5])
     _decade_ticks(ax, "y", [0.25, 0.5, 1, 2])
-    ax.legend(loc="upper left", fontsize=7.4)
+    ax.legend(loc="upper left", fontsize=9)
     fs.panel_label(ax, "(a)")
 
     ax = axes[1]
@@ -105,8 +107,12 @@ def fig4(v: pd.DataFrame) -> None:
     # long Ciaoyi interval at lower left.
     ax.annotate(f"median {np.median(s):.4f}", xy=(0.985, np.median(s)),
                 xycoords=("axes fraction", "data"), ha="right", va="bottom",
-                fontsize=7.4, color="0.35")
-    fs.metric_box(ax, f"Spearman $\\rho$ = {rho:.2f}\np = {p_rho:.1e}",
+                fontsize=8.5, color="0.35")
+    _m, _e = f"{p_rho:.1e}".split("e")
+    # U+2212 MINUS SIGN, not an ASCII hyphen, to match the axis tick labels
+    _rho = f"{rho:.2f}".replace("-", "\u2212")
+    fs.metric_box(ax, f"Spearman $\\rho$ = {_rho}\n"
+                      f"$p$ = {_m} $\\times$ 10$^{{{int(_e)}}}$",
                   loc="upper right")
     fs.panel_label(ax, "(b)")
 

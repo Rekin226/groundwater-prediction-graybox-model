@@ -90,6 +90,16 @@ def main(argv=None):
 
     _merge(args.run_id)
 
+    # Network-level summary figures (headline obs-vs-pred + cal-vs-val skill).
+    # Skipped silently if no per-station output exists (e.g. single-station run).
+    if not args.station:
+        try:
+            from subsidence.sub_plotting import plot_network_summary
+            plot_network_summary(f"workspace/results_sub/{args.run_id}")
+            print(f"  → workspace/results_sub/{args.run_id}/figures/summary/")
+        except Exception as e:  # plotting must never fail the whole run
+            print(f"  [warn] network summary figures skipped: {e}")
+
 
 if __name__ == "__main__":
     sys.exit(main())

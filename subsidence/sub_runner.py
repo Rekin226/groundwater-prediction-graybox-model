@@ -57,7 +57,13 @@ EXCLUDED_DATASETS = ("ls-wra-dbm-obs",)
 # +5.6 m datum shift within the val window.  Cal period (2020-2022) is clean
 # but val is unrecoverable; rate = -438 cm/yr is a metadata artefact, not
 # subsidence.
-EXCLUDED_STATIONS = ("LNJS",)
+# YSLL: datum-reset artefact.  ~0.058 m of real subsidence (2020-2022, ~2 cm/yr)
+# then a +0.714 m one-way step on 2023-09-10 across a 351-day gap, inflating the
+# total to a spurious 0.85 m (next-highest station = 0.30 m).  clean_ls misses it
+# because the offset is one-way (no boxcar pair) and sits inside a messy gap where
+# the slope-based datum_reset test can't run → falls to flag_only.  The model
+# correctly predicted ~0.08 m; the negative KGE_val is driven by bad data.
+EXCLUDED_STATIONS = ("LNJS", "YSLL")
 
 
 MLCW_MIN_CAL_OBS = 12   # ~1 year of monthly samples
