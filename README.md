@@ -2,6 +2,9 @@
 
 A physics-informed, gray-box model for simulating groundwater level (GWL) dynamics at monitoring stations across an alluvial fan. The model fits discrete-time ODEs to observed GWL using rainfall, upstream GWL, tidal/semi-diurnal signals, and a seasonal cycle as drivers. Four model variants are fit per station; the best is selected by validation-period KGE.
 
+> [!NOTE]
+> This repository is primarily a **research codebase**. It is designed to document and reproduce a groundwater modeling workflow, rather than provide a polished end-user software package.
+
 ## Model overview
 
 ### 2×2 factorial design
@@ -381,3 +384,20 @@ For each station (`<run_id>/figures/...`):
 | adjusttext | Non-overlapping label placement on maps |
 | python-docx | Manuscript export |
 | rklib *(sibling)* | In-house publication-figure helpers (`setup_font`, `savefig`, `add_panel_label`) |
+
+## Research context
+
+This repository is related to published work on groundwater process analysis, reference-level estimation, and signal-processing-based hydrogeological interpretation.
+
+## Related publications
+
+1. Hsu, S.M., Ouédraogo, A.R. & Chen, YW. **A data-driven approach to establishing groundwater reference levels through hydrogeological process analysis in central Taiwan.** *Hydrogeology Journal* **34**, 103–124 (2026). DOI: https://doi.org/10.1007/s10040-025-02992-2
+2. Ouédraogo, A. R., Hsu, S. M., & Wang, Y. **Estimating the Average Magnitude of Pumping Surrounding Monitoring Wells Using Signal Processing.** *Journal of Hydrologic Engineering* **28**(4): 05023002 (2023). ASCE. DOI: https://doi.org/10.1061/JHYEFF.HEENG-5760
+
+## License
+
+Released under the MIT License; see [`LICENSE`](LICENSE).
+
+## Author
+
+Repository owner: [Rekin226](https://github.com/Rekin226)
