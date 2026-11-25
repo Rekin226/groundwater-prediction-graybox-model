@@ -1,44 +1,389 @@
-# Groundwater Prediction Gray-Box Model
+# Single Tank V2 — Gray-Box Groundwater Model
 
-A Python-based gray-box modeling workflow for groundwater level prediction, station pairing, coastal/inland classification, and diagnostics in the Zhuoshui Alluvial Fan region of central Taiwan.
+A physics-informed, gray-box model for simulating groundwater level (GWL) dynamics at monitoring stations across an alluvial fan. The model fits discrete-time ODEs to observed GWL using rainfall, upstream GWL, tidal/semi-diurnal signals, and a seasonal cycle as drivers. Four model variants are fit per station; the best is selected by validation-period KGE.
 
 > [!NOTE]
 > This repository is primarily a **research codebase**. It is designed to document and reproduce a groundwater modeling workflow, rather than provide a polished end-user software package.
 
-## Features
+## Model overview
 
-- Groundwater and rainfall data preparation
-- Upstream groundwater station pairing
-- Rainfall station pairing using lagged correlation
-- Coastal vs. inland station classification
-- Gray-box groundwater model calibration
-- Model comparison using RMSE and `R²`
-- Diagnostics for low-performing stations
-- Plot and report generation for analysis workflows
+### 2×2 factorial design
 
-## Overview
+Four variants are fit per station, spanning two orthogonal model-structure axes:
 
-This repository contains a groundwater modeling pipeline that combines:
+|  | **Constant z** | **Time-varying z(t)** |
+|---|---|---|
+| **Raw upstream driver** | `M1`: *Direct* (`base`) | `M3`: *Direct, z(t)* (`base_tz`) |
+| **Low-pass filtered upstream** | `M2`: *Filtered* (`filtered`) | `M4`: *Filtered, z(t)* (`filtered_tz`) |
 
-- **Data preparation** for groundwater and rainfall stations
-- **Groundwater–upstream station pairing**
-- **Groundwater–rainfall pairing** using lagged correlation search
-- **Coastal vs. inland station classification** using spatial proximity and frequency-domain tidal signatures
-- **Gray-box model calibration** for each groundwater station
-- **Diagnostics and reporting** for low-performing fits
+- **Constant-z** variants treat the baseflow equilibrium level `z` as a single scalar parameter.
+- **z(t)** variants let it drift linearly in time: `z(t) = z0 + z1 · (t / 365.25)` with `z1` in m/year — captures multi-year non-stationarity (aquifer storage trend).
+- **Filtered** variants pass the upstream GWL through a first-order IIR low-pass filter (EMA with rate `lambda`) before the `k_link` coupling term:
+  `u[t+1] = (1 − λ)·u[t] + λ·h_up[t]` — damps local high-frequency noise in the upstream signal.
+- **Direct** variants feed raw `h_up` into the coupling term.
 
-The project is implemented in Python and organized around standalone scripts under `srcs/`.
+### ODEs (Euler integration, dt = 1 day)
 
-## What this repository does
+**Inland stations**
+```
+h[t+1] = h[t] − a·(h[t] − z_t) + b·R_eff[t] − c·AMP[t] + k_link·(h_up_eff[t] − h[t])
+        + d_sin·sin(2π·DOY/365.25) + d_cos·cos(2π·DOY/365.25)
+```
 
-At a high level, the workflow:
+**Coastal stations** (adds submarine groundwater discharge and semi-diurnal tidal response)
+```
+h[t+1] = h[t] − a·(h[t] − z_t) + b·R_eff[t] − c·AMP[t] + k_link·(h_up_eff[t] − h[t])
+        − k_sgd·(h[t] − h_sea) + gamma·AMT[t]
+        + d_sin·sin(2π·DOY/365.25) + d_cos·cos(2π·DOY/365.25)
+```
 
-1. prepares groundwater and rainfall data,
-2. identifies likely upstream and rainfall drivers for each monitoring well,
-3. classifies wells as inland or coastal,
-4. builds a station-level modeling input table,
-5. calibrates gray-box models for selected stations, and
-6. exports fit summaries, comparisons, figures, and diagnostics.
+where `z_t = z` (constant-z) or `z_t = z0 + z1·(t/365.25)` (z(t) variants).
+
+### Parameter glossary
+
+- `a` — drainage / recession coefficient
+- `z` (or `z0`, `z1`) — baseflow equilibrium level (constant, or linear-in-time trend)
+- `b` — rainfall response coefficient
+- `c` — diurnal tidal pumping coefficient
+- `k_link` — upstream hydraulic connectivity
+- `lambda` — low-pass filter rate on upstream driver (*Filtered* variants only)
+- `k_sgd` — submarine groundwater discharge coefficient (coastal only)
+- `gamma` — semi-diurnal tidal response (coastal only)
+- `h_sea` — effective sea level (coastal only)
+- `d_sin`, `d_cos` — seasonal cycle amplitude (annual, decomposed)
+- `R_eff`, `h_up_eff` — rainfall and upstream GWL convolved with unit-sum exponential kernels (time constants `tau_rain`, `tau_up`; window = 90 days). Because the kernels sum to 1, `tau` sets only the response shape and `b` / `k_link` carry the gain
+- `AMP` / `AMT` — diurnal (~1 cpd) and semi-diurnal (~1.93 cpd) tidal amplitudes extracted by STFT of hourly GWL
+
+### Calibration
+
+- **Optimizer**: `scipy.optimize.differential_evolution` (global) + `curve_fit` polish for `pcov`.
+- **Temporal split** (`CAL_END`, `SEL_END` in `gw_shell.py`): calibration 2012–2018, selection 2019–2020, test 2021–2022. Pairing, classification and lags use calibration data only; variant choice and pairing refinement use the selection period only; the test period is scored once and drives no decision.
+- **Simulation**: one continuous run over the whole record with the calibrated parameters (no restart at period boundaries).
+- **Model selection**: best of the four variants by selection-period **`kge_ab`** (KGE with additive bias, datum-invariant); calibration `kge_ab` if the selection period is too short.
+
+## Pipeline overview
+
+```
+01_input_prepar.py
+        ↓  data/raw/gw_stations_prefilter.csv
+        ↓  data/raw/rf_stations_prefilter.csv
+02_pairing.py
+        ↓  data/gray_box_input_raw.csv    (permanent original, never overwritten)
+        ↓  data/gray_box_input.csv        (working copy used by step 3)
+        ↓  workspace/maps/upstream_links_initial.tiff
+03_run_model.py                           (default --run_id initial;
+                                           set active=1 in gray_box_input.csv first)
+        ↓  workspace/results/<run_id>/per_station/{st_id}.csv    (one per station)
+        ↓  workspace/results/<run_id>/all_variants/{st_id}.csv   (one row per variant)
+        ↓  workspace/results/<run_id>/gw_fit_results.csv         (merged best-variant)
+        ↓  workspace/results/<run_id>/all_variants_results.csv   (merged all-variants)
+        ↓  workspace/results/<run_id>/figures/
+               ├─ base/, filtered/, base_tz/, filtered_tz/       (per-variant plots)
+               ├─ comparison/                                    (overlay + metrics table)
+               └─ full_subplots/                                 (best variant + rainfall + AMP)
+04_diag_pairing_search.py
+        ↓  workspace/diagnostics/pairing_search_summary.csv
+        ↓  workspace/diagnostics/pairing_search_trials.csv
+        ↓  data/gray_box_input_optimized.csv
+        ↓  workspace/maps/upstream_links_optimized.tiff
+05_diag_report.py
+        ↓  workspace/diagnostics/diagnostics_report_r2_below_0p5.csv
+06_plot_maps.py
+        ↓  workspace/maps/station_map.tiff, coastal_stations_map_wgs84.tiff, etc.
+
+(optional rerun with optimized pairings)
+03_run_model.py --input data/gray_box_input_optimized.csv --run_id final
+```
+
+## Subsidence pipeline
+
+Extends the GW model with a parallel land-subsidence pipeline that predicts cumulative vertical displacement ζ(t) at GNSS, MLCW, and DBM stations in the Zhuoshui Alluvial Fan. Each station is driven by a hybrid h(t) — observed groundwater levels with GW-model gap-fill — so the two pipelines are sequentially decoupled: `srcs/` is imported as a read-only library; all new code lives in `subsidence/`.
+
+### Pipeline scripts
+
+| Script | Purpose |
+|---|---|
+| `01_fetch_ls_data.py` | Fetch GNSS / MLCW / DBM observations from WiseEnvr LS API |
+| `02_fetch_drivers.py` | Fetch GW + rainfall driver data |
+| `03_pair_sub_gw.py` | Co-located + nearest-neighbour-within-zone pairing |
+| `04_assemble_h_driver.py` | Hybrid driver with cosine-tapered gap-fill |
+| `05_run_subsidence.py` | Multiprocessing dispatcher; 4-variant fit per station |
+| `06_diag_report.py` | Weak-station diagnostics |
+| `07_plot_maps.py` | Spatial maps |
+
+### Calibration protocol
+
+**Forms**
+
+- **Form 2** (Riley/IBS): elastic + inelastic compaction — available to all station types.
+- **Form 3**: adds aquitard drainage time constant τ — eligible for MLCW stations only.
+
+**2×2 factorial design**
+
+Four variants per station spanning two axes:
+
+|  | **Constant v\_tect** | **Linear v\_tect(t)** |
+|---|---|---|
+| **Form 2** | M1 | M2 |
+| **Form 3 (MLCW only)** | M3 | M4 |
+
+Best variant selected by validation KGE; rate-KGE used as a secondary diagnostic.
+
+**Temporal split**
+
+| Period | Dates |
+|---|---|
+| Calibration | 2020-01-01 → 2022-12-31 |
+| Buffer (excluded) | 2023 |
+| Validation | 2024-01-01 → 2025-03-31 |
+
+### Required environment variables
+
+Steps 01 and 04 call the live WiseEnvr LS API:
+
+```bash
+export LS_USER=your_username
+export LS_PASS=your_password
+```
+
+### Make targets
+
+| Target | Description |
+|---|---|
+| `make sub-fetch` | Steps 01 + 02 — fetch LS observations and drivers (live API) |
+| `make sub-pair` | Step 03 — compute subsidence ↔ GW pairings |
+| `make sub-driver` | Step 04 — assemble hybrid h_driver per station (live API) |
+| `make sub-run` | Step 05 — fit all active stations (default `SUB_RUN_ID=initial`) |
+| `make sub-run-station SUB_STATION=TKJS` | Single-station fit |
+| `make sub-compare` | Step 06 — diagnostic report on weak stations |
+| `make sub-maps` | Step 07 — generate spatial maps |
+| `make sub-help` | Print subsidence-pipeline help |
+| `make sub-clean` | Remove `workspace/results_sub/<SUB_RUN_ID>` |
+
+## Project structure
+
+```
+single_tankV2/
+├── data/
+│   ├── gray_box_input_raw.csv        # Original pairings from step 2 — never modified
+│   ├── gray_box_input.csv            # Working copy used by step 3
+│   ├── gray_box_input_optimized.csv  # Improved pairings from step 4
+│   ├── gw_stations.csv               # Filtered groundwater station metadata
+│   ├── gw_timeseries.csv             # Hourly groundwater level time series
+│   ├── rf_stations.csv               # Rainfall station metadata
+│   └── rf_timeseries.csv             # Daily rainfall time series
+├── srcs/
+│   ├── 01_input_prepar.py            # Data preparation and filtering
+│   ├── 02_pairing.py                 # Upstream + rainfall pairing, coastal/inland classification
+│   ├── 03_run_model.py               # Parallel 4-variant calibration dispatcher
+│   ├── 04_diag_pairing_search.py     # Pairing search for low-skill stations
+│   ├── 05_diag_report.py             # Parameter-level diagnostics report
+│   ├── 06_plot_maps.py               # Spatial performance maps
+│   ├── gw_shell.py                   # Per-station pipeline: prep, fit 4 variants, plot, write CSVs
+│   ├── gw_subroutine.py              # ODE simulators (8 variants: inland/coastal × base/filtered × const-z/z(t))
+│   ├── jfft.py                       # STFT helper for tidal amplitude extraction
+│   └── archived/                     # Superseded scaffolding (early TZ experiments)
+├── scripts/
+│   └── verify_cal_val_plots.py       # Two-station smoke test (st3 + st14) for plot changes
+├── workspace/
+│   ├── results/<run_id>/
+│   │   ├── per_station/              # Best-variant CSV per station
+│   │   ├── all_variants/             # Four-variant CSV per station (one row per variant)
+│   │   ├── gw_fit_results.csv        # Merged best-variant results
+│   │   ├── all_variants_results.csv  # Merged all-variants results
+│   │   └── figures/                  # Per-variant, comparison, and full-subplot plots
+│   ├── diagnostics/                  # Diagnostic CSVs and reports
+│   └── maps/                         # Generated spatial maps
+├── docs/
+│   └── superpowers/
+│       ├── specs/                    # Design documents
+│       └── plans/                    # Implementation plans
+├── manuscripts/                      # Paper drafts and manuscript figure scripts
+├── pyproject.toml
+└── poetry.toml
+```
+
+## Setup
+
+Requires Python 3.10–3.14 and [Poetry](https://python-poetry.org/). The model code depends on the sibling package `rklib` (located at `../rklib/` relative to repo root).
+
+```bash
+poetry install
+eval $(poetry env activate)
+```
+
+## Usage
+
+### Full pipeline
+
+```bash
+# Step 1 — prepare raw data
+python srcs/01_input_prepar.py
+
+# Step 2 — pair stations, classify coastal/inland
+python srcs/02_pairing.py
+
+# Step 3 — calibrate all four model variants (set active=1 in gray_box_input.csv first)
+python srcs/03_run_model.py
+
+# Step 4 — search for better pairings for weak-skill stations
+python srcs/04_diag_pairing_search.py
+
+# Step 5 — generate diagnostics report
+python srcs/05_diag_report.py
+
+# Step 6 — spatial maps
+python srcs/06_plot_maps.py
+```
+
+### Resume an interrupted run
+
+Stations whose per-station CSV already exists are skipped automatically:
+
+```bash
+python srcs/03_run_model.py            # resumes from where it stopped
+python srcs/03_run_model.py --force    # re-runs all active stations regardless
+```
+
+### Re-run with optimized pairings
+
+```bash
+python srcs/03_run_model.py \
+  --input data/gray_box_input_optimized.csv \
+  --run_id final
+```
+
+### Subset of variants
+
+```bash
+# Only direct variants (skip filtered-upstream)
+python srcs/03_run_model.py --models base,base_tz
+```
+
+### Run a single station manually
+
+```bash
+python srcs/gw_shell.py \
+  gw_st=9200211 st_id=st3 gw_x=169424.217 gw_y=2607200.343 \
+  ups_id=st43 rf_id=rf17 lag_days=1 group_name=inland
+```
+
+### Plot-change verification (st3 + st14)
+
+```bash
+PYTHONPATH=../:srcs python scripts/verify_cal_val_plots.py
+```
+
+Re-runs the pipeline on two representative stations (st3 = bad fit, st14 = good fit) to sanity-check plot changes before a full 61-station rerun.
+
+### Diagnostic search options
+
+```bash
+python srcs/04_diag_pairing_search.py \
+  --r2-threshold 0.5 \
+  --top-k-rf 3 \
+  --top-k-ups 3 \
+  --passes 2 \
+  --min-improvement 0.02 \
+  --output-optimized data/gray_box_input_optimized.csv
+```
+
+## Calibration details
+
+| Aspect | Implementation |
+|---|---|
+| Optimizer | `scipy.optimize.differential_evolution` (global) + `curve_fit` polish |
+| Variants fit per station | 4 (base, filtered, base_tz, filtered_tz) |
+| Model selection | Selection-period `kge_ab` |
+| Temporal split | Calibration ≤ `CAL_END` (2018-12-31), selection ≤ `SEL_END` (2020-12-31), test after |
+| Simulation | Continuous over the whole record with calibrated parameters |
+| Metrics recorded | Per period (`_cal`, `_sel`, `_test`): `r2`/`nse`, `rmse`, `mae`, `bias`, classic `kge` (+ `kge_r`, `kge_alpha`, `kge_beta`), `kge_ab` (+ `kge_ab_beta`) |
+| Parameter uncertainty | Standard errors from `pcov` → `{param}_std` |
+| Convolution window | 90 days (covers >95% of exponential kernel for `tau` up to 30 d) |
+| Parallelism | `multiprocessing.Pool` — one worker per active station |
+
+## Fit results columns (`gw_fit_results.csv`, best variant per station)
+
+| Column | Description |
+|---|---|
+| `st_id`, `gw_st`, `ups_id`, `rf_id` | Station identifiers |
+| `group_name` | `inland` or `coastal` |
+| `rain_lag_days`, `up_lag_days` | Estimated input lags |
+| `model`, `selection_basis` | Selected variant and the period it was chosen on (`sel`, or `cal` as fallback) |
+| `n_cal`, `n_sel`, `n_test` | Daily records in each period |
+| `{metric}_{cal,sel,test}` | Metrics per period (see above) |
+| `{param}_at_bound` | Fitted value within 0.1% of the bound range at either end |
+| `a`, `z` (or `z0`, `z1`), `b`, `c`, `k_link`, `lambda`, `tau_rain`, `tau_up`, `d_sin`, `d_cos` | Fitted parameters |
+| `k_sgd`, `gamma`, `h_sea` | Extra coastal parameters |
+| `{param}_std` | Parameter standard errors from `pcov` |
+
+`all_variants_results.csv` has one row per (station × variant) with metrics, parameters and a `selected` flag. `series/{st_id}.csv` holds daily observed and simulated heads for every variant, with a period label.
+
+## Station configuration (`gray_box_input.csv`)
+
+| Column | Description |
+|---|---|
+| `gw_st` | Official groundwater station number |
+| `st_id` | Short station ID (matches column in `gw_timeseries.csv`) |
+| `gw_TM_X97`, `gw_TM_Y97` | TWD97 coordinates |
+| `ups_id` | Primary upstream station ID (`none` if no upstream) |
+| `ups_candidates` | Comma-separated top-3 geographically-plausible upstream candidates (step 4 search pool) |
+| `spearmanr`, `correlation` | Upstream correlation strength + label |
+| `ups_lag_days` | Estimated lag between station and upstream (days) |
+| `ups_head_diff_m` | Mean head difference upstream − downstream (m) |
+| `rf_id` | Paired rainfall station ID |
+| `distance_m` | Distance to paired rainfall station (m) |
+| `max_corr`, `lag_days` | Best lagged correlation with rainfall and corresponding lag |
+| `quality` | RF pairing quality: Strong / Medium / Weak / None |
+| `group` | `inland` or `coastal` |
+| `active` | `1` to include in run, `0` to skip |
+
+## Pairing strategy
+
+**Step 2 — initial pairing (geographic + correlation)**
+
+Upstream candidates are first filtered geographically (next eastward X-band, ~6.6 km wide, plus one additional band), then ranked by Spearman r. The highest-correlated candidate becomes `ups_id`; the top 3 are stored in `ups_candidates`. Nearest-neighbour is the fallback when no time-series overlap exists.
+
+Rainfall stations are paired by scanning all RF stations within 25 km and selecting the one with the highest lagged Pearson correlation against the daily GWL difference series.
+
+**Step 4 — model-driven re-pairing (weak-skill stations)**
+
+A coordinate-descent search tests alternative `rf_id` and `ups_id` combinations using actual model RMSE as the objective. The `ups_candidates` list from step 2 constrains the search pool to physically plausible options. Improvements above `--min-improvement` (default Δ R² = 0.02) are applied to `gray_box_input_optimized.csv`.
+
+## Plot outputs
+
+For each station (`<run_id>/figures/...`):
+
+| Path | Contents |
+|---|---|
+| `base/gw_fit_{st}.tiff`, `filtered/…`, `base_tz/…`, `filtered_tz/…` | One plot per variant: observed (black) + calibration (blue) + validation (red), continuous cal→val seam, KGE + RMSE annotation boxes |
+| `comparison/gw_compare_{st}.tiff` | Four variants overlaid (cal solid, val dashed), per-variant colors, with a metrics table below listing `KGE_cal`, `KGE_val`, `RMSE_cal`, `RMSE_val` and asterisking the best by `KGE_val` |
+| `full_subplots/gw_fit_{st}.tiff` | Three-panel composite: best-variant GWL, rainfall (rf station), tidal amplitude (AMP) — all across the full study period |
+
+## Output maps
+
+| File | Description |
+|---|---|
+| `workspace/maps/upstream_links_initial.tiff` | Upstream pairing from step 2 |
+| `workspace/maps/upstream_links_optimized.tiff` | Upstream pairing after step 4 (comparison) |
+| `workspace/maps/station_map.tiff` | All GW and rainfall stations |
+| `workspace/maps/station_map_subplots.tiff` | GW and rainfall stations in separate panels |
+| `workspace/maps/coastal_stations_map_wgs84.tiff` | Classified coastal stations |
+
+## Dependencies
+
+| Package | Purpose |
+|---|---|
+| numpy, scipy | Numerics, ODE integration, global optimisation |
+| pandas | Time series handling |
+| matplotlib | Plotting |
+| scikit-learn | R², RMSE metrics |
+| geopandas, shapely, pyproj, pyshp | Spatial operations |
+| numba | JIT acceleration |
+| tqdm | Progress bars |
+| adjusttext | Non-overlapping label placement on maps |
+| python-docx | Manuscript export |
+| rklib *(sibling)* | In-house publication-figure helpers (`setup_font`, `savefig`, `add_panel_label`) |
 
 ## Research context
 
@@ -49,331 +394,9 @@ This repository is related to published work on groundwater process analysis, re
 1. Hsu, S.M., Ouédraogo, A.R. & Chen, YW. **A data-driven approach to establishing groundwater reference levels through hydrogeological process analysis in central Taiwan.** *Hydrogeology Journal* **34**, 103–124 (2026). DOI: https://doi.org/10.1007/s10040-025-02992-2
 2. Ouédraogo, A. R., Hsu, S. M., & Wang, Y. **Estimating the Average Magnitude of Pumping Surrounding Monitoring Wells Using Signal Processing.** *Journal of Hydrologic Engineering* **28**(4): 05023002 (2023). ASCE. DOI: https://doi.org/10.1061/JHYEFF.HEENG-5760
 
-## Repository structure
-
-```text
-.
-├── data/                  # Input and generated data files (mostly not committed)
-├── srcs/                  # Source scripts for preprocessing, modeling, and diagnostics
-│   ├── classif_inld_coast.py
-│   ├── corr_up_rf.py
-│   ├── diagnostics_pairing_search.py
-│   ├── diagnostics_report.py
-│   ├── gray_box_driver.py
-│   ├── gw_shell.py
-│   ├── gw_subroutine.py
-│   ├── input_prepar.py
-│   ├── jfft.py
-│   ├── makefile
-│   └── test.py
-└── workspace/             # Output plots, summaries, and diagnostics
-```
-
-## Quick start
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/Rekin226/groundwater-prediction-graybox-model.git
-cd groundwater-prediction-graybox-model
-```
-
-### 2. Create and activate a virtual environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-On Windows:
-
-```bash
-.venv\Scripts\activate
-```
-
-### 3. Install dependencies
-
-This repository does not currently include a `requirements.txt` or `pyproject.toml`, so dependencies must be installed manually.
-
-```bash
-pip install pandas numpy scipy scikit-learn matplotlib geopandas shapely pyproj pyshp tqdm numba
-```
-
-Depending on your environment, you may also need system libraries required by GeoPandas, Fiona, or GDAL.
-
-### 4. Generate gray-box input relationships
-
-```bash
-python srcs/corr_up_rf.py
-```
-
-This step is intended to generate:
-
-- groundwater metadata filtered to the study area,
-- station pairings,
-- coastal/inland classification,
-- `data/gray_box_input.csv`,
-- visualization outputs in `workspace/`.
-
-### 5. Activate selected stations
-
-Edit `data/gray_box_input.csv` and set:
-
-- `active = 1` for stations you want to calibrate,
-- `active = 0` for stations you want to skip.
-
-### 6. Run gray-box calibration
-
-```bash
-python srcs/gray_box_driver.py
-```
-
-### 7. Run diagnostics
-
-```bash
-python srcs/diagnostics_report.py
-```
-
-Optional:
-
-```bash
-python srcs/diagnostics_pairing_search.py
-```
-
-## Main workflow
-
-The repository supports the following high-level workflow:
-
-1. Prepare and clean groundwater and rainfall metadata/time series.
-2. Pair each groundwater station with:
-   - an upstream groundwater station,
-   - and a rainfall station.
-3. Classify stations into **inland** or **coastal** groups.
-4. Build `data/gray_box_input.csv`.
-5. Run gray-box calibration for active stations.
-6. Save figures and model-fit summaries to `workspace/`.
-7. Run diagnostics on stations with low `R²`.
-
-## Core scripts
-
-### `srcs/corr_up_rf.py`
-Builds the main station-level modeling input relationships.
-
-Main tasks:
-
-- filter groundwater stations inside the study boundary,
-- prepare groundwater metadata and time series,
-- load rainfall metadata and daily rainfall data,
-- identify upstream groundwater station links,
-- identify the best rainfall station by lagged correlation,
-- classify stations as coastal or inland,
-- generate `data/gray_box_input.csv`,
-- create maps and other visual outputs in `workspace/`.
-
-### `srcs/gray_box_driver.py`
-Runs the batch calibration workflow.
-
-It:
-
-- loads `data/gray_box_input.csv`,
-- filters rows where `active == 1`,
-- groups stations by `group` (`inland` / `coastal`),
-- launches `gw_shell.py` in parallel for each selected station.
-
-### `srcs/gw_shell.py`
-Per-station model fitting and result export.
-
-Responsibilities include:
-
-- loading groundwater and rainfall data,
-- computing daily groundwater series,
-- extracting tidal indicators (`amp`, `amt`) from hourly groundwater data using STFT,
-- estimating rainfall and upstream lags,
-- fitting two model variants:
-  - `base`,
-  - `filtered`,
-- comparing model performance using RMSE and `R²`,
-- exporting:
-  - plot images to `workspace/muli_model/`,
-  - best-fit summaries to `workspace/gw_fit_results.csv`,
-  - per-model comparisons to `workspace/gw_fit_model_compare.csv`.
-
-### `srcs/gw_subroutine.py`
-Contains the gray-box groundwater model equations and wrappers used during calibration.
-
-Implemented models include:
-
-- inland model,
-- coastal model,
-- inland model with filtered upstream driver,
-- coastal model with filtered upstream driver.
-
-### `srcs/classif_inld_coast.py`
-Standalone coastal/inland classification workflow based on:
-
-- distance to coastline,
-- spectral evidence of the M2 tidal component.
-
-### `srcs/input_prepar.py`
-Earlier-stage data preparation utility for:
-
-- groundwater metadata extraction from shapefiles,
-- groundwater time series filtering,
-- rainfall metadata preparation,
-- writing intermediate CSV inputs.
-
-### `srcs/diagnostics_report.py`
-Generates a diagnostics CSV for stations with low model performance.
-
-It checks for issues such as:
-
-- parameters near optimization bounds,
-- tiny coefficients,
-- weak rainfall, upstream, or tidal contributions,
-- suspicious lag values.
-
-### `srcs/diagnostics_pairing_search.py`
-Searches for improved rainfall/upstream pairings for stations with poor `R²` values by re-evaluating candidate combinations.
-
-### `srcs/test.py`
-Simple helper script for filtering model-fit results below an `R²` threshold.
-
-## Run a single-station fit manually
-
-Example command pattern:
-
-```bash
-python srcs/gw_shell.py st_id=st1 gw_st=station_id gw_x=0 gw_y=0 ups_id=none rf_id=RF001 lag_days=5 group_name=inland
-```
-
-Arguments are passed in `key=value` format.
-
-## Modeling concept
-
-This project uses a **gray-box** approach, blending:
-
-- **physics-inspired process structure** (groundwater balance / response equations), and
-- **data-driven parameter estimation** using nonlinear optimization.
-
-The implemented models account for combinations of:
-
-- groundwater recession toward an equilibrium level,
-- rainfall recharge effects,
-- upstream groundwater influence,
-- tidal amplitude forcing,
-- and, for coastal sites:
-  - tidal modulation (`AMT`),
-  - sea-level interaction / submarine groundwater discharge terms.
-
-Two model families are tested for each station:
-
-1. **Base model**
-2. **Filtered model** with a low-pass filtered upstream signal
-
-The best model is selected using fit error metrics such as RMSE and `R²`.
-
-## Expected input data
-
-The repository currently does **not** include the full modeling datasets. The scripts expect files under `data/` such as:
-
-- `data/gray_box_input.csv`
-- `data/gw_data2.csv`
-- `data/rf_data.csv`
-- `data/gw_meta2.csv`
-
-Several scripts also reference GIS and intermediate files such as:
-
-- `data/input_gw_st.csv`
-- `data/input_rf_st.csv`
-- `data/gw_data.csv`
-- `data/rf_meta.csv`
-- `data/GIS/...`
-- shapefiles for:
-  - groundwater stations,
-  - rainfall stations,
-  - coastline / sea polygons,
-  - Zhuoshui Alluvial Fan boundary.
-
-Because these datasets are not committed, you must supply them locally before running the full workflow.
-
-## Required columns
-
-### `data/gray_box_input.csv`
-The batch driver expects at least these columns:
-
-- `gw_st`
-- `st_id`
-- `gw_TM_X97`
-- `gw_TM_Y97`
-- `ups_id`
-- `rf_id`
-- `lag_days`
-- `group`
-- `active`
-
-Only rows with `active == 1` are executed by `gray_box_driver.py`.
-
-## Outputs
-
-Typical outputs written to `workspace/` include:
-
-- `gw_fit_results.csv`
-- `gw_fit_model_compare.csv`
-- `gw_fit_results_r2_below_0p5.csv`
-- `diagnostics_report_r2_below_0p5.csv`
-- `pairing_search_summary.csv`
-- `pairing_search_trials.csv`
-- station fit figures
-- coastal station maps
-- upstream-link maps / animations
-
-## Contributing
-
-Contributions are welcome, especially improvements to:
-
-- documentation,
-- reproducibility,
-- dependency management,
-- code structure,
-- testing,
-- and example datasets or tutorials.
-
-If you plan to contribute:
-
-1. fork the repository,
-2. create a feature branch,
-3. make your changes,
-4. open a pull request with a clear description.
-
-Because this is a research-oriented repository, please describe:
-
-- what changed,
-- why it changed,
-- and whether the change affects reproducibility, results, or workflows.
-
-## Limitations
-
-- This repository currently contains **code only**; core datasets are not included.
-- Some scripts use relative paths and assume execution from specific working directories.
-- GIS-dependent scripts require shapefiles and a working geospatial Python stack.
-- There is no packaged CLI or pinned dependency file yet.
-- File naming and script organization reflect an active research workflow and may include legacy conventions.
-
-## Roadmap ideas
-
-Useful additions to this repository would include:
-
-- a `requirements.txt` or `environment.yml`,
-- a small sample dataset or synthetic example,
-- a documented end-to-end reproducible example,
-- clearer separation between raw data, processed data, and outputs,
-- unit tests for core preprocessing and model functions,
-- consistent argument parsing for all scripts,
-- a dedicated `How to cite` section.
-
 ## License
 
-No license file is currently present in the repository. If you want others to use or contribute to this project, consider adding a license such as MIT, BSD-3-Clause, or GPL.
+Released under the MIT License; see [`LICENSE`](LICENSE).
 
 ## Author
 
