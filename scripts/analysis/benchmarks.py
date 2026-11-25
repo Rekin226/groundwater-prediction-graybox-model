@@ -9,6 +9,12 @@ seasonal-naive which by definition uses the observation one year earlier):
   ar1             AR(1) on daily anomalies from climatology, fitted before
                   the test period and iterated forward from its last value
   reduced         rainfall-only single tank (separate run; optional)
+  regression      information-matched linear regression: the same observed
+                  inputs as the grey-box model (upstream head, rainfall through
+                  exponential kernels of 3/10/30/90 d, AMP, AMT at coastal
+                  stations, annual harmonics), fitted by least squares on the
+                  calibration period and run over the test period without
+                  using observed target heads
 
 Note: the grey-box model is driven by observed rainfall, upstream heads and
 AMP/AMT during the test period (reconstruction mode); the statistical
@@ -55,6 +61,30 @@ def ar1_forecast(clim: np.ndarray, obs: np.ndarray, train: np.ndarray, test: np.
     return out
 
 
+RAIN_TAUS = (3.0, 10.0, 30.0, 90.0)
+
+
+def regression_benchmark(res_row: pd.Series, st: str) -> pd.Series:
+    """Calibration-fitted linear regression on the grey-box model's own inputs."""
+    ups = res_row.get("ups_id", "none")
+    df_merge, no_up = gw_shell.prepare_data({"st_id": st, "ups_id": ups, "rf_id": res_row["rf_id"]})
+    t, rain, amp, amt, h_up, h_obs, idx, doy = gw_shell.fit_preprocess(
+        df_merge, int(res_row["rain_lag_days"]), int(res_row["up_lag_days"]))
+    n_cal, _ = gw_shell.period_bounds(idx)
+    cols = [np.ones(len(t))]
+    cols += [gw_shell.sub.memory_convolve(rain, tau, 180, 0.0) for tau in RAIN_TAUS]
+    if not no_up:
+        cols.append(h_up)
+    cols.append(amp)
+    if str(res_row["group_name"]).lower() == "coastal":
+        cols.append(amt)
+    ang = 2 * np.pi * doy / 365.25
+    cols += [np.sin(ang), np.cos(ang)]
+    X = np.column_stack(cols)
+    beta, *_ = np.linalg.lstsq(X[:n_cal], h_obs[:n_cal], rcond=None)
+    return pd.Series(X @ beta, index=idx)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", default=None)
@@ -83,6 +113,10 @@ def main() -> int:
             sr = load_series(red_dir, st).set_index("date")["sim_base"]
             # Different lags drop different leading rows, so align on date.
             preds["reduced"] = sr.reindex(s["date"]).to_numpy()
+        try:
+            preds["regression"] = regression_benchmark(res.loc[st], st).reindex(s["date"]).to_numpy()
+        except Exception as exc:  # keep the other baselines if inputs fail
+            print(f"{st}: regression benchmark failed ({exc})")
         for name, pred in preds.items():
             m_ok = test & np.isfinite(pred)
             m = gw_shell.period_metrics(obs[m_ok], pred[m_ok])

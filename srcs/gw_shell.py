@@ -732,6 +732,28 @@ def run_global_optimization(
 # Per-station calibration
 ###############################################################################
 
+def transform_inputs(rainfall: np.ndarray, h_up: np.ndarray, h_obs: np.ndarray,
+                     n_cal: int, no_upstream: bool) -> Tuple[np.ndarray, np.ndarray]:
+    """Optional input transforms for sensitivity runs (off by default).
+
+    GW_UPS_OFFSET=cal shifts the upstream head by the difference of the
+    calibration-period means, so k_link*(h_up - h) has no constant part and the
+    level offset between the two wells is not absorbed by a and z.
+    GW_RAIN_DRYNESS_BETA=beta scales daily rainfall by (A_t / A_cal)**beta, where
+    A_t is the trailing 365-day mean rainfall (causal) and A_cal its calibration
+    mean, so the rainfall response weakens in dry years.
+    Both use calibration data only for their reference values.
+    """
+    if os.environ.get("GW_UPS_OFFSET", "") == "cal" and not no_upstream:
+        h_up = h_up - float(np.mean(h_up[:n_cal])) + float(np.mean(h_obs[:n_cal]))
+    beta = float(os.environ.get("GW_RAIN_DRYNESS_BETA", "0") or 0)
+    if beta != 0.0:
+        a_ref = float(np.mean(rainfall[:n_cal]))
+        a_t = pd.Series(rainfall).rolling(365, min_periods=365).mean().fillna(a_ref).to_numpy()
+        rainfall = rainfall * np.power(np.maximum(a_t, 1e-9) / a_ref, beta)
+    return rainfall, h_up
+
+
 def setup_fit(
     df_merge: pd.DataFrame,
     group_name: str,
@@ -760,6 +782,8 @@ def setup_fit(
     if n_cal < 60:
         print(f"Only {n_cal} calibration records; skipping model '{model_name}'.")
         return None
+
+    rainfall, h_up = transform_inputs(rainfall, h_up, h_obs, n_cal, no_upstream)
 
     t_cal      = t[:n_cal]
     h_obs_cal  = h_obs[:n_cal]

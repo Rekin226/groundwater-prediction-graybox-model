@@ -1,9 +1,12 @@
 """Event-based look at the 2020-2021 drought.
 
 Windows (spanning the selection/test boundary):
-  pre      2019-01-01 .. 2020-06-30
-  drought  2020-07-01 .. 2021-06-30
-  post     2021-07-01 .. 2022-12-31
+  pre               2019-01-01 .. 2020-06-30
+  drought           2020-07-01 .. 2021-06-30
+  drought_sel       2020-07-01 .. 2020-12-31  (selection period)
+  drought_test      2021-01-01 .. 2021-06-30  (test period)
+  drought_test_dry  2021-01-01 .. 2021-05-31  (before the June 2021 rains)
+  post              2021-07-01 .. 2022-12-31
 
 Per station: rainfall at the assigned gauge as a percentage of the
 calibration-period (2012-2018) mean for the same calendar days, and the
@@ -25,6 +28,11 @@ from common import analysis_dir, load_results, load_series, run_dir, station_sor
 WINDOWS = {
     "pre": ("2019-01-01", "2020-06-30"),
     "drought": ("2020-07-01", "2021-06-30"),
+    # the drought window split at the selection/test boundary: only the
+    # second half is independent of variant selection
+    "drought_sel": ("2020-07-01", "2020-12-31"),
+    "drought_test": ("2021-01-01", "2021-06-30"),
+    "drought_test_dry": ("2021-01-01", "2021-05-31"),
     "post": ("2021-07-01", "2022-12-31"),
 }
 

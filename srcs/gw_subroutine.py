@@ -1,5 +1,19 @@
+import os
 import numpy as np
 from typing import List, Optional, Tuple
+
+
+def _step_scale(*rates: float) -> float:
+	"""Step multiplier for the daily update.
+
+	Explicit Euler (default) adds the full increment. With GW_INTEGRATOR=implicit
+	the head-dependent terms are evaluated at the new step; because they are
+	linear in h this reduces to dividing the explicit increment by 1 + sum(rates),
+	which is unconditionally stable and never overshoots the equilibrium.
+	"""
+	if os.environ.get("GW_INTEGRATOR", "explicit") == "implicit":
+		return 1.0 / (1.0 + float(sum(rates)))
+	return 1.0
 
 
 ###############################################################################
@@ -51,6 +65,7 @@ def simulate_inland(
 	#            + [-a*(h[t] - z) + b*R[t] - c*AMP[t] + k_link*(h_up[t] - h[t])]
 	#            + d_sin*sin(2π*DOY/365.25) + d_cos*cos(2π*DOY/365.25)
 	a, z, b, c, k_link, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -65,7 +80,7 @@ def simulate_inland(
 		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z)
 			+ b * r_eff
 			- c * amp[i - 1]
@@ -92,6 +107,7 @@ def simulate_coastal(
 	#            - k_sgd*(h[t] - h_sea) + gamma*AMT[t]
 	#            + d_sin*sin(2π*DOY/365.25) + d_cos*cos(2π*DOY/365.25)
 	a, z, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link, k_sgd)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -106,7 +122,7 @@ def simulate_coastal(
 		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z)
 			+ b * r_eff
 			- c * amp[i - 1]
@@ -133,6 +149,7 @@ def simulate_inland_filtered(
 	#   h[t+1] = h[t] + [-a*(h[t] - z) + b*R[t] - c*AMP[t] + k*(u[t] - h[t])]
 	#            + d_sin*sin(2π*DOY/365.25) + d_cos*cos(2π*DOY/365.25)
 	a, z, b, c, k_link, lam, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -148,7 +165,7 @@ def simulate_inland_filtered(
 		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z)
 			+ b * r_eff
 			- c * amp[i - 1]
@@ -176,6 +193,7 @@ def simulate_coastal_filtered(
 	#            - k_sgd*(h[t] - h_sea) + gamma*AMT[t]
 	#            + d_sin*sin(2π*DOY/365.25) + d_cos*cos(2π*DOY/365.25)
 	a, z, b, c, k_link, k_sgd, gamma, h_sea, lam, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link, k_sgd)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -191,7 +209,7 @@ def simulate_coastal_filtered(
 		h_up_eff = h_up_conv[i - 1]
 		h_prev = h[i - 1]
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z)
 			+ b * r_eff
 			- c * amp[i - 1]
@@ -226,6 +244,7 @@ def simulate_inland_tz(
 	#   h[t+1] = h[t] + [-a*(h[t] - z_t) + b*R[t] - c*AMP[t] + k_link*(h_up[t] - h[t])]
 	#            + d_sin*sin(2π*DOY/365.25) + d_cos*cos(2π*DOY/365.25)
 	a, z0, z1, b, c, k_link, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -242,7 +261,7 @@ def simulate_inland_tz(
 		h_prev = h[i - 1]
 		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z_t)
 			+ b * r_eff
 			- c * amp[i - 1]
@@ -266,6 +285,7 @@ def simulate_coastal_tz(
 	# Coastal ODE with time-varying equilibrium (dt=1):
 	#   z_t = z0 + z1 * (t / 365.25)
 	a, z0, z1, b, c, k_link, k_sgd, gamma, h_sea, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link, k_sgd)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -282,7 +302,7 @@ def simulate_coastal_tz(
 		h_prev = h[i - 1]
 		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z_t)
 			+ b * r_eff
 			- c * amp[i - 1]
@@ -306,6 +326,7 @@ def simulate_inland_filtered_tz(
 ) -> np.ndarray:
 	# Inland ODE with low-pass filtered upstream + time-varying z (dt=1)
 	a, z0, z1, b, c, k_link, lam, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -323,7 +344,7 @@ def simulate_inland_filtered_tz(
 		h_prev = h[i - 1]
 		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z_t)
 			+ b * r_eff
 			- c * amp[i - 1]
@@ -347,6 +368,7 @@ def simulate_coastal_filtered_tz(
 ) -> np.ndarray:
 	# Coastal ODE with low-pass filtered upstream + time-varying z (dt=1)
 	a, z0, z1, b, c, k_link, k_sgd, gamma, h_sea, lam, tau_rain, tau_up, d_sin, d_cos = params
+	_s = _step_scale(a, k_link, k_sgd)
 	n = len(t)
 	h = np.zeros(n, dtype=float)
 	h[0] = h0
@@ -364,7 +386,7 @@ def simulate_coastal_filtered_tz(
 		h_prev = h[i - 1]
 		z_t = z0 + z1 * (t_f[i - 1] / 365.25)
 		angle = 2.0 * np.pi * _doy[i - 1] / 365.25
-		h[i] = h_prev + (
+		h[i] = h_prev + _s * (
 			-a * (h_prev - z_t)
 			+ b * r_eff
 			- c * amp[i - 1]
